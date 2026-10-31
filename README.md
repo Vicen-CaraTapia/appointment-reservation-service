@@ -9,6 +9,22 @@ sistema distribuido de Programación 2.
 - No es necesario instalar Maven globalmente: el repositorio incluye Maven
   Wrapper.
 
+## Configuración de base de datos
+
+La aplicación requiere una base PostgreSQL propia configurada mediante
+variables de entorno. No guardes credenciales reales en el repositorio.
+
+```bash
+export APPOINTMENT_DB_URL='jdbc:postgresql://<host>:<port>/appointment_db'
+export APPOINTMENT_DB_USERNAME='appointment_user'
+read -r -s -p 'APPOINTMENT_DB_PASSWORD: ' APPOINTMENT_DB_PASSWORD
+echo
+export APPOINTMENT_DB_PASSWORD
+```
+
+Hibernate no crea ni modifica el esquema de la base de datos. Las migraciones
+versionadas se incorporarán en una Issue posterior mediante Flyway.
+
 ## Ejecutar el servicio
 
 ```bash
@@ -46,7 +62,8 @@ La respuesta esperada incluye:
 
 ## Alcance actual
 
-Este bootstrap contiene únicamente la base ejecutable de Spring Boot, Maven
-Wrapper, Actuator y el test de salud. Todavía no incluye persistencia, usuarios,
+El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
+configuración de conexión PostgreSQL y el test de salud. Todavía no incluye
+entidades JPA, repositorios, tablas, migraciones Flyway, usuarios,
 autenticación, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
