@@ -22,8 +22,11 @@ echo
 export APPOINTMENT_DB_PASSWORD
 ```
 
-Hibernate no crea ni modifica el esquema de la base de datos. Las migraciones
-versionadas se incorporarán en una Issue posterior mediante Flyway.
+Hibernate no crea ni modifica el esquema de la base de datos. Spring Boot ejecuta
+Flyway automáticamente y valida el historial al iniciar. Las convenciones están
+en [db/migration/README.md](src/main/resources/db/migration/README.md).
+La primera V1 productiva queda reservada para A2.1; A1.3 no inventa tablas ni
+duplica los permisos del aprovisionamiento de A1.2.
 
 ## Ejecutar el servicio
 
@@ -60,10 +63,30 @@ La respuesta esperada incluye:
 ./mvnw clean verify
 ```
 
+La verificación normal no requiere PostgreSQL externo. Para las pruebas reales,
+configurá explícitamente una base descartable de Appointment cuyo nombre empiece
+con `appointment_` y un usuario con permiso de crear esquemas:
+
+```bash
+export APPOINTMENT_TEST_DB_URL='jdbc:postgresql://<host>:<port>/appointment_test'
+export APPOINTMENT_TEST_DB_USERNAME='<test-user>'
+read -r -s -p 'APPOINTMENT_TEST_DB_PASSWORD: ' APPOINTMENT_TEST_DB_PASSWORD
+echo
+export APPOINTMENT_TEST_DB_PASSWORD
+./mvnw -Ppostgres-integration clean verify
+```
+
+El perfil falla si faltan variables o no puede conectar; no omite las pruebas.
+Cada prueba crea un esquema `appointment_it_<uuid>` y elimina exclusivamente ese
+esquema al terminar. Nunca apuntes estas pruebas a Catalog ni a producción.
+Las fixtures SQL solo están en recursos de test y no se empaquetan en el JAR.
+Verifican arranque automático, historial, orden, no reaplicación y rollback ante
+SQL inválido. No representan una migración productiva de Appointment.
+
 ## Alcance actual
 
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
-configuración de conexión PostgreSQL y el test de salud. Todavía no incluye
-entidades JPA, repositorios, tablas, migraciones Flyway, usuarios,
+configuración PostgreSQL, infraestructura Flyway y el test de salud. Todavía no incluye
+entidades JPA, repositorios, tablas de negocio, migraciones productivas, usuarios,
 autenticación, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
