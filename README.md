@@ -184,6 +184,49 @@ Las fixtures SQL solo están en recursos de test y no se empaquetan en el JAR.
 Verifican arranque automático, historial, orden, no reaplicación y rollback ante
 SQL inválido. No representan una migración productiva de Appointment.
 
+## Integración continua y SonarQube Cloud
+
+El workflow `.github/workflows/appointment-ci.yml` ejecuta checkout completo,
+Temurin 25 y `./mvnw --batch-mode --no-transfer-progress clean verify` en PR hacia
+`develop`, `main` o `milestone/**`, y en push a `develop` o `main`.
+No requiere PostgreSQL ni credenciales de base de datos: el perfil de integración
+PostgreSQL sigue siendo explícito y no se ejecuta en esta CI inicial.
+Los errores de compilación o de tests hacen fallar el job `build-and-test`.
+
+JaCoCo genera `target/site/jacoco/jacoco.xml` durante `verify`; SonarScanner para
+Maven importa ese reporte desde su ubicación estándar. El reporte HTML local
+está en `target/site/jacoco/index.html`. No se excluye código para alterar la
+cobertura ni se agregan umbrales Maven adicionales.
+
+Crear un proyecto propio de Appointment en SonarQube Cloud vinculado a este
+repositorio y seleccionar análisis mediante GitHub Actions, desactivando el
+análisis automático si estaba habilitado. Configurar en GitHub, en
+Settings → Secrets and variables → Actions:
+
+| Tipo | Nombre | Propósito |
+| --- | --- | --- |
+| Variable | `SONAR_ORGANIZATION` | Organización de SonarQube Cloud. |
+| Variable | `SONAR_PROJECT_KEY` | Identificador del proyecto propio de Appointment. |
+| Secret | `SONAR_TOKEN` | Token con permiso de analizar ese proyecto. |
+
+No copiar la clave de proyecto de Catalog ni guardar tokens en el repositorio,
+en `.env.example` o en argumentos del scanner. El workflow inyecta el token como
+variable de entorno únicamente durante el análisis y no imprime su valor.
+Los permisos del token de GitHub se limitan a lectura; no se necesita un PAT.
+
+Para PR del mismo repositorio, el análisis espera el Quality Gate: una falla del
+scanner o del gate hace fallar el job. Si falta configuración, el paso falla con
+el nombre de la variable o secret faltante, sin mostrar valores.
+En PR de forks y ejecuciones de Dependabot se conserva build/tests y se omite
+Sonar porque no disponen de los secretos normales de Actions. No se utiliza
+`pull_request_target` para ejecutar código de PR con credenciales.
+
+La ejecución real en Actions, la importación de cobertura, la decoración del PR
+y el Quality Gate deben comprobarse después de publicar el workflow y configurar
+Sonar. Para bloquear merges, configurar las reglas de protección de GitHub con
+el check requerido correspondiente; crear este archivo no activa esa regla.
+La disponibilidad de análisis de ramas y PR depende del plan de SonarQube Cloud.
+
 ## Alcance actual
 
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
