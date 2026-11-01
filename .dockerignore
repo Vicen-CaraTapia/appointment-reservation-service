@@ -1,0 +1,13 @@
+*
+
+!Dockerfile
+!pom.xml
+!src/
+!src/main/
+!src/main/**
+
+**/.env
+**/.env.*
+**/application-local.yml
+**/application-local.yaml
+**/application-local.properties

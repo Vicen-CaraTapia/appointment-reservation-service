@@ -95,6 +95,69 @@ La respuesta esperada incluye:
 }
 ```
 
+## Ejecución con Docker
+
+Requiere Docker con acceso al registro de imágenes y a las dependencias Maven.
+La construcción multietapa compila con Maven 3.10.0 y Java 25; no necesita un JAR
+local, `.env`, credenciales ni archivos fuera del repositorio. Los tests se
+ejecutan por separado mediante los comandos de verificación.
+
+```bash
+docker build -t appointment-reservation-service:local .
+```
+
+La imagen final usa Java 25 JRE, un usuario sin privilegios y `curl` para consultar
+Actuator. `.dockerignore` limita el contexto al Dockerfile, POM y fuentes de
+producción; excluye configuración local, secretos y recursos de prueba.
+No pases secretos como argumentos de construcción.
+
+Para usar el PostgreSQL de Appointment de la infraestructura compartida,
+confirmá primero que está iniciado y verificá el nombre de su red. En el entorno
+de desarrollo actual es `project-infrastructure_appointment-db-network`.
+Configurá las variables en la shell sin imprimir la contraseña:
+
+```bash
+export APPOINTMENT_DB_URL='jdbc:postgresql://appointment-postgres:5432/appointment_db'
+export APPOINTMENT_DB_USERNAME='appointment_user'
+read -r -s -p 'APPOINTMENT_DB_PASSWORD: ' APPOINTMENT_DB_PASSWORD
+echo
+export APPOINTMENT_DB_PASSWORD
+
+docker run -d --name appointment-service-local \
+  --network project-infrastructure_appointment-db-network \
+  -p 127.0.0.1:8082:8082 \
+  -e APPOINTMENT_DB_URL \
+  -e APPOINTMENT_DB_USERNAME \
+  -e APPOINTMENT_DB_PASSWORD \
+  appointment-reservation-service:local
+```
+
+`appointment-postgres` es el nombre DNS del servicio PostgreSQL en esa red.
+Dentro del contenedor, `localhost` identifica al propio contenedor y el puerto
+de la base es `5432`, no el `55433` publicado para conexiones desde el host.
+No conectes Appointment a la red ni a la base de Catalog.
+
+Para PostgreSQL instalado en el host, usá una URL externa con
+`host.docker.internal:<puerto>`. En Linux agregá al `docker run`
+`--add-host=host.docker.internal:host-gateway`. PostgreSQL debe escuchar en una
+interfaz accesible desde Docker y autorizar esa conexión en sus reglas de acceso;
+la publicación de puertos de la aplicación no configura PostgreSQL.
+
+El health check consulta `/actuator/health` y respeta `SERVER_PORT` (8082 por
+defecto). Si cambiás el puerto interno, agregá `-e SERVER_PORT=<puerto>` y ajustá
+el puerto de destino de `-p`. `EXPOSE` documenta el puerto; no lo publica.
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' appointment-service-local
+curl --fail http://localhost:8082/actuator/health
+docker stop appointment-service-local
+```
+
+Las variables de ejecución no forman parte de la imagen, aunque quienes tengan
+acceso administrativo a Docker pueden inspeccionar el entorno del contenedor.
+No publiques salidas de `docker inspect` que incluyan credenciales. El Compose
+general se administra fuera de este repositorio.
+
 ## Verificación
 
 ```bash
