@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.client.RestTestClient;
 
 @SpringBootTest(
@@ -11,6 +12,7 @@ import org.springframework.test.web.servlet.client.RestTestClient;
 		useMainMethod = SpringBootTest.UseMainMethod.ALWAYS
 )
 @AutoConfigureRestTestClient
+@ActiveProfiles("test")
 class AppointmentReservationApplicationTests {
 
 	@Test
