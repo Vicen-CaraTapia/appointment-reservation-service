@@ -28,6 +28,44 @@ en [db/migration/README.md](src/main/resources/db/migration/README.md).
 La primera V1 productiva queda reservada para A2.1; A1.3 no inventa tablas ni
 duplica los permisos del aprovisionamiento de A1.2.
 
+## Configuración externa y perfiles
+
+[.env.example](.env.example) documenta los nombres y valores de ejemplo.
+**Spring Boot no carga `.env` automáticamente.** Configurá las variables desde
+la shell, la configuración de ejecución del IDE o el entorno del contenedor.
+Copiar la plantilla a `.env` sirve como referencia local; no configura la
+aplicación por sí solo. No ejecutes la plantilla como script: contiene placeholders.
+
+| Variable | Necesaria | Valor predeterminado / propósito |
+| --- | --- | --- |
+| `SERVER_PORT` | No | `8082`; puerto HTTP. |
+| `APPOINTMENT_DB_URL` | Sí | URL JDBC PostgreSQL, sin usuario ni contraseña embebidos. |
+| `APPOINTMENT_DB_USERNAME` | Sí | Usuario exclusivo de Appointment. |
+| `APPOINTMENT_DB_PASSWORD` | Sí | Contraseña externa, sin valor predeterminado. |
+| `APPOINTMENT_TEST_DB_URL` | Solo integración | URL de una base descartable de Appointment. |
+| `APPOINTMENT_TEST_DB_USERNAME` | Solo integración | Usuario con permiso de crear esquemas de prueba. |
+| `APPOINTMENT_TEST_DB_PASSWORD` | Solo integración | Contraseña externa para las pruebas PostgreSQL. |
+
+La aplicación usa la configuración común de `application.yml` sin requerir un
+perfil de desarrollo o producción. Para PostgreSQL instalado en el host o en
+Docker, cambiá únicamente la URL externa según el host y puerto publicados.
+Podés reutilizar el mismo JAR con distintos valores sin recompilar.
+
+El perfil Spring `test`, definido exclusivamente en recursos de test, desactiva
+el datasource para el test de bootstrap/HTTP. No se empaqueta en el JAR.
+El perfil Maven `postgres-integration` selecciona las pruebas con PostgreSQL real;
+no activa el perfil Spring `test` y exige las variables `APPOINTMENT_TEST_DB_*`.
+
+Git ignora `.env`, `.env.*` y `application-local.*` de los formatos admitidos,
+pero conserva `.env.example`. No agregues secretos al código, a URLs JDBC, a
+argumentos de comandos ni a logs. Si guardás secretos en un archivo local,
+restringí sus permisos al propietario (`chmod 600 .env`). Los permisos y el
+archivo ignorado no reemplazan una gestión de secretos para producción.
+
+JWT de usuarios, identidad interna de Catalog, credenciales técnicas de cátedra
+y Kafka se configurarán en sus propias Issues. Se mantendrán como identidades
+separadas y valores externos; esta Issue no define nombres ni secretos futuros.
+
 ## Ejecutar el servicio
 
 ```bash
