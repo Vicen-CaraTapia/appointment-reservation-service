@@ -1,0 +1,4 @@
+# Bootstrap/HTTP tests only. Real PostgreSQL tests do not activate this profile.
+spring:
+  autoconfigure:
+    exclude: org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
