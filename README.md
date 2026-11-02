@@ -25,8 +25,8 @@ export APPOINTMENT_DB_PASSWORD
 Hibernate no crea ni modifica el esquema de la base de datos. Spring Boot ejecuta
 Flyway automáticamente y valida el historial al iniciar. Las convenciones están
 en [db/migration/README.md](src/main/resources/db/migration/README.md).
-La primera V1 productiva queda reservada para A2.1; A1.3 no inventa tablas ni
-duplica los permisos del aprovisionamiento de A1.2.
+La primera V1 productiva se incorpora en A2.1 para usuarios finales, autoridades y
+su relación. A1.3 preparó el mecanismo sin inventar tablas ni duplicar permisos.
 
 ## Configuración externa y perfiles
 
@@ -227,10 +227,87 @@ Sonar. Para bloquear merges, configurar las reglas de protección de GitHub con
 el check requerido correspondiente; crear este archivo no activa esa regla.
 La disponibilidad de análisis de ramas y PR depende del plan de SonarQube Cloud.
 
+## Hashing de contraseñas — incremento A2.1
+
+`PasswordEncodingConfiguration` expone un bean `PasswordEncoder` implementado
+mediante `Argon2PasswordEncoder` (Argon2id). La política aprobada reemplaza la
+propuesta inicial de BCrypt; no existen hashes BCrypt de usuarios que migrar.
+Los parámetros son explícitos: sal de 16 bytes, hash de 32 bytes, memoria de
+19456 KiB (19 MiB), 2 iteraciones y paralelismo 1. Cada llamada a `encode`
+genera una sal aleatoria nueva mediante el encoder de Spring Security.
+
+Spring Boot 4.1.1 administra `spring-security-crypto` 7.1.1. Bouncy Castle no está
+administrado por ese parent: se fija `bcprov-jdk18on` 1.85 como dependencia runtime,
+alineada con la versión utilizada por Spring Security 7.1.1. Argon2 necesita las
+clases de ese proveedor; no se requiere instalar una biblioteca nativa ni agregar
+`bcpkix`, el starter de seguridad web o filtros de autenticación.
+
+El resultado completo tiene formato PHC
+`$argon2id$v=19$m=19456,t=2,p=1$<salt-base64>$<hash-base64>`: contiene algoritmo,
+versión, parámetros, sal y hash. La V1 de A2.1 crea `password_hash VARCHAR(255)`
+para guardar ese texto íntegro, sin truncarlo ni separar la sal. La migración
+incluye app_user, authority y app_user_authority, índices únicos de login/email
+sin distinguir mayúsculas, activación y auditoría. Solo crea ROLE_USER, no cuentas
+de ejemplo. La prueba PostgreSQL verifica el almacenamiento del hash completo.
+`UserEntity`, `AuthorityEntity` y `UserJpaRepository` mapean esa estructura sin
+generar esquema. Hibernate sigue en `none`; las pruebas de mapeo usan `validate`
+solo en su contexto aislado para comprobar que las entidades coinciden con V1.
+
+El hashing se realiza antes de persistir, fuera de entidades y repositorios.
+La contraseña original solo debe utilizarse transitoriamente para codificar o
+comparar mediante `PasswordEncoder`: nunca almacenarse, registrarse en logs ni
+incluirse en respuestas. La capa HTTP futura deberá usar DTO que no expongan el
+hash ni acepten campos internos de activación, autoridades o auditoría.
+Este incremento configura la herramienta y sus pruebas; no introduce registro,
+login, JWT, filtros ni una API que reciba o devuelva contraseñas.
+
+Los tests unitarios comprueban coincidencia correcta, rechazo de contraseña
+incorrecta, sales distintas para el mismo texto y formato/parámetros de Argon2id.
+Se ejecutan con `./mvnw clean verify` sin PostgreSQL. Los parámetros criptográficos
+son una política explícita, no una variable que cambie entre entornos; cualquier
+ajuste futuro debe revisar compatibilidad, coste y actualización de hashes.
+
+Fuentes de compatibilidad:
+[Argon2PasswordEncoder 7.1.1](https://github.com/spring-projects/spring-security/blob/7.1.1/crypto/src/main/java/org/springframework/security/crypto/argon2/Argon2PasswordEncoder.java)
+y [dependencias de Spring Security 7.1.1](https://github.com/spring-projects/spring-security/blob/7.1.1/gradle/libs.versions.toml).
+
 ## Alcance actual
 
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
-configuración PostgreSQL, infraestructura Flyway y el test de salud. Todavía no incluye
-entidades JPA, repositorios, tablas de negocio, migraciones productivas, usuarios,
+configuración PostgreSQL, Flyway, hashing Argon2id, modelo JPA de usuario/autoridades
+y repositorio de persistencia. Todavía no incluye registro de usuarios,
 autenticación, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
+
+## Modelo persistente de usuario — A2.1
+
+Las clases están en `user/infrastructure/persistence/`: son representaciones de
+almacenamiento y no un contrato HTTP ni el modelo de dominio de futuros casos de
+uso. No se agregan puertos o adaptadores sin un caso de uso que los necesite.
+Nunca deben utilizarse como request/response de registro o autenticación.
+
+`UserEntity` recibe un Argon2id ya calculado fuera de JPA, valida su formato y
+no hace hashing. La comprobación de formato no verifica criptográficamente un
+hash; la codificación/comparación siguen siendo responsabilidad de PasswordEncoder.
+Login/email se normalizan con `Locale.ROOT`; PostgreSQL también protege su
+unicidad. El ID se genera mediante IDENTITY y no tiene setter público.
+
+La activación inicia en false y puede cambiarse mediante una operación explícita
+del backend; A2.2 deberá activarla durante el registro. Las autoridades se asignan
+desde backend y el getter devuelve una colección no modificable. La relación es
+lazy, sin cascadas sobre authority; la búsqueda por login del repositorio usa un
+EntityGraph para recuperar las autoridades junto al usuario. No se crean roles
+nuevos implícitamente al guardar una cuenta.
+
+La auditoría utiliza Instant y callbacks JPA: created_date al insertar y
+last_modified_date al actualizar. Las operaciones de modificación reciben un
+actor suministrado por backend, sin simular una identidad autenticada inexistente.
+No hay setters de fechas o de auditoría de creación. Esto no reemplaza la futura
+autorización del caso de uso ni permite confiar en un actor enviado por clientes.
+Los cambios de autoridades también marcan la auditoría del usuario propietario.
+
+`UserEntityTest` verifica invariantes sin base externa. `UserPersistenceIT`, bajo
+postgres-integration, prueba persistir/recuperar, hash íntegro verificable,
+imageUrl nullable, restricciones únicas, roles y auditoría con PostgreSQL real.
+Usa esquemas temporales de Appointment y los elimina al terminar; no toca Catalog
+ni migra public. La V1 publicada no se modifica en este incremento.
