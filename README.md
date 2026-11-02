@@ -249,7 +249,9 @@ para guardar ese texto íntegro, sin truncarlo ni separar la sal. La migración
 incluye app_user, authority y app_user_authority, índices únicos de login/email
 sin distinguir mayúsculas, activación y auditoría. Solo crea ROLE_USER, no cuentas
 de ejemplo. La prueba PostgreSQL verifica el almacenamiento del hash completo.
-La entidad y el repositorio JPA quedan para el siguiente incremento.
+`UserEntity`, `AuthorityEntity` y `UserJpaRepository` mapean esa estructura sin
+generar esquema. Hibernate sigue en `none`; las pruebas de mapeo usan `validate`
+solo en su contexto aislado para comprobar que las entidades coinciden con V1.
 
 El hashing se realiza antes de persistir, fuera de entidades y repositorios.
 La contraseña original solo debe utilizarse transitoriamente para codificar o
@@ -272,7 +274,40 @@ y [dependencias de Spring Security 7.1.1](https://github.com/spring-projects/spr
 ## Alcance actual
 
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
-configuración PostgreSQL, infraestructura Flyway, hashing Argon2id y el test de salud. Todavía no incluye
-entidades JPA, repositorios, registro de usuarios,
+configuración PostgreSQL, Flyway, hashing Argon2id, modelo JPA de usuario/autoridades
+y repositorio de persistencia. Todavía no incluye registro de usuarios,
 autenticación, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
+
+## Modelo persistente de usuario — A2.1
+
+Las clases están en `user/infrastructure/persistence/`: son representaciones de
+almacenamiento y no un contrato HTTP ni el modelo de dominio de futuros casos de
+uso. No se agregan puertos o adaptadores sin un caso de uso que los necesite.
+Nunca deben utilizarse como request/response de registro o autenticación.
+
+`UserEntity` recibe un Argon2id ya calculado fuera de JPA, valida su formato y
+no hace hashing. La comprobación de formato no verifica criptográficamente un
+hash; la codificación/comparación siguen siendo responsabilidad de PasswordEncoder.
+Login/email se normalizan con `Locale.ROOT`; PostgreSQL también protege su
+unicidad. El ID se genera mediante IDENTITY y no tiene setter público.
+
+La activación inicia en false y puede cambiarse mediante una operación explícita
+del backend; A2.2 deberá activarla durante el registro. Las autoridades se asignan
+desde backend y el getter devuelve una colección no modificable. La relación es
+lazy, sin cascadas sobre authority; la búsqueda por login del repositorio usa un
+EntityGraph para recuperar las autoridades junto al usuario. No se crean roles
+nuevos implícitamente al guardar una cuenta.
+
+La auditoría utiliza Instant y callbacks JPA: created_date al insertar y
+last_modified_date al actualizar. Las operaciones de modificación reciben un
+actor suministrado por backend, sin simular una identidad autenticada inexistente.
+No hay setters de fechas o de auditoría de creación. Esto no reemplaza la futura
+autorización del caso de uso ni permite confiar en un actor enviado por clientes.
+Los cambios de autoridades también marcan la auditoría del usuario propietario.
+
+`UserEntityTest` verifica invariantes sin base externa. `UserPersistenceIT`, bajo
+postgres-integration, prueba persistir/recuperar, hash íntegro verificable,
+imageUrl nullable, restricciones únicas, roles y auditoría con PostgreSQL real.
+Usa esquemas temporales de Appointment y los elimina al terminar; no toca Catalog
+ni migra public. La V1 publicada no se modifica en este incremento.
