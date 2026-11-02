@@ -227,10 +227,51 @@ Sonar. Para bloquear merges, configurar las reglas de protección de GitHub con
 el check requerido correspondiente; crear este archivo no activa esa regla.
 La disponibilidad de análisis de ramas y PR depende del plan de SonarQube Cloud.
 
+## Hashing de contraseñas — incremento A2.1
+
+`PasswordEncodingConfiguration` expone un bean `PasswordEncoder` implementado
+mediante `Argon2PasswordEncoder` (Argon2id). La política aprobada reemplaza la
+propuesta inicial de BCrypt; no existen hashes BCrypt de usuarios que migrar.
+Los parámetros son explícitos: sal de 16 bytes, hash de 32 bytes, memoria de
+19456 KiB (19 MiB), 2 iteraciones y paralelismo 1. Cada llamada a `encode`
+genera una sal aleatoria nueva mediante el encoder de Spring Security.
+
+Spring Boot 4.1.1 administra `spring-security-crypto` 7.1.1. Bouncy Castle no está
+administrado por ese parent: se fija `bcprov-jdk18on` 1.85 como dependencia runtime,
+alineada con la versión utilizada por Spring Security 7.1.1. Argon2 necesita las
+clases de ese proveedor; no se requiere instalar una biblioteca nativa ni agregar
+`bcpkix`, el starter de seguridad web o filtros de autenticación.
+
+El resultado completo tiene formato PHC
+`$argon2id$v=19$m=19456,t=2,p=1$<salt-base64>$<hash-base64>`: contiene algoritmo,
+versión, parámetros, sal y hash. La V1 y el modelo JPA pendientes de A2.1 deberán
+guardar ese texto íntegro en `password_hash VARCHAR(255)`, sin truncarlo ni
+separar la sal. La longitud está verificada por un test; la columna todavía no
+existe en este incremento. Se conservan las decisiones aprobadas de usuario,
+autoridades y auditoría.
+
+El hashing se realiza antes de persistir, fuera de entidades y repositorios.
+La contraseña original solo debe utilizarse transitoriamente para codificar o
+comparar mediante `PasswordEncoder`: nunca almacenarse, registrarse en logs ni
+incluirse en respuestas. La capa HTTP futura deberá usar DTO que no expongan el
+hash ni acepten campos internos de activación, autoridades o auditoría.
+Este incremento configura la herramienta y sus pruebas; no introduce registro,
+login, JWT, filtros ni una API que reciba o devuelva contraseñas.
+
+Los tests unitarios comprueban coincidencia correcta, rechazo de contraseña
+incorrecta, sales distintas para el mismo texto y formato/parámetros de Argon2id.
+Se ejecutan con `./mvnw clean verify` sin PostgreSQL. Los parámetros criptográficos
+son una política explícita, no una variable que cambie entre entornos; cualquier
+ajuste futuro debe revisar compatibilidad, coste y actualización de hashes.
+
+Fuentes de compatibilidad:
+[Argon2PasswordEncoder 7.1.1](https://github.com/spring-projects/spring-security/blob/7.1.1/crypto/src/main/java/org/springframework/security/crypto/argon2/Argon2PasswordEncoder.java)
+y [dependencias de Spring Security 7.1.1](https://github.com/spring-projects/spring-security/blob/7.1.1/gradle/libs.versions.toml).
+
 ## Alcance actual
 
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
-configuración PostgreSQL, infraestructura Flyway y el test de salud. Todavía no incluye
+configuración PostgreSQL, infraestructura Flyway, hashing Argon2id y el test de salud. Todavía no incluye
 entidades JPA, repositorios, tablas de negocio, migraciones productivas, usuarios,
 autenticación, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
