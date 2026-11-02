@@ -25,8 +25,8 @@ export APPOINTMENT_DB_PASSWORD
 Hibernate no crea ni modifica el esquema de la base de datos. Spring Boot ejecuta
 Flyway automáticamente y valida el historial al iniciar. Las convenciones están
 en [db/migration/README.md](src/main/resources/db/migration/README.md).
-La primera V1 productiva queda reservada para A2.1; A1.3 no inventa tablas ni
-duplica los permisos del aprovisionamiento de A1.2.
+La primera V1 productiva se incorpora en A2.1 para usuarios finales, autoridades y
+su relación. A1.3 preparó el mecanismo sin inventar tablas ni duplicar permisos.
 
 ## Configuración externa y perfiles
 
@@ -244,11 +244,12 @@ clases de ese proveedor; no se requiere instalar una biblioteca nativa ni agrega
 
 El resultado completo tiene formato PHC
 `$argon2id$v=19$m=19456,t=2,p=1$<salt-base64>$<hash-base64>`: contiene algoritmo,
-versión, parámetros, sal y hash. La V1 y el modelo JPA pendientes de A2.1 deberán
-guardar ese texto íntegro en `password_hash VARCHAR(255)`, sin truncarlo ni
-separar la sal. La longitud está verificada por un test; la columna todavía no
-existe en este incremento. Se conservan las decisiones aprobadas de usuario,
-autoridades y auditoría.
+versión, parámetros, sal y hash. La V1 de A2.1 crea `password_hash VARCHAR(255)`
+para guardar ese texto íntegro, sin truncarlo ni separar la sal. La migración
+incluye app_user, authority y app_user_authority, índices únicos de login/email
+sin distinguir mayúsculas, activación y auditoría. Solo crea ROLE_USER, no cuentas
+de ejemplo. La prueba PostgreSQL verifica el almacenamiento del hash completo.
+La entidad y el repositorio JPA quedan para el siguiente incremento.
 
 El hashing se realiza antes de persistir, fuera de entidades y repositorios.
 La contraseña original solo debe utilizarse transitoriamente para codificar o
@@ -272,6 +273,6 @@ y [dependencias de Spring Security 7.1.1](https://github.com/spring-projects/spr
 
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
 configuración PostgreSQL, infraestructura Flyway, hashing Argon2id y el test de salud. Todavía no incluye
-entidades JPA, repositorios, tablas de negocio, migraciones productivas, usuarios,
+entidades JPA, repositorios, registro de usuarios,
 autenticación, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
