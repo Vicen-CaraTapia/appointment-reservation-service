@@ -9,6 +9,10 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.en
 
 public interface UserJpaRepository extends JpaRepository<UserEntity, Long> {
 
+	boolean existsByLoginIgnoreCase(String login);
+
+	boolean existsByEmailIgnoreCase(String email);
+
 	@EntityGraph(attributePaths = "authorities")
 	Optional<UserEntity> findByLoginIgnoreCase(String login);
 }

@@ -5,7 +5,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.client.RestTestClient;
+
+import ar.edu.um.prog2.appointmentreservation.user.application.port.out.UserRegistrationStore;
 
 @SpringBootTest(
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -14,6 +17,9 @@ import org.springframework.test.web.servlet.client.RestTestClient;
 @AutoConfigureRestTestClient
 @ActiveProfiles("test")
 class AppointmentReservationApplicationTests {
+
+	@MockitoBean
+	private UserRegistrationStore userRegistrationStore;
 
 	@Test
 	void healthIsUp(@Autowired RestTestClient restClient) {

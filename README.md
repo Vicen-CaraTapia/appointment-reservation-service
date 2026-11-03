@@ -256,9 +256,9 @@ solo en su contexto aislado para comprobar que las entidades coinciden con V1.
 El hashing se realiza antes de persistir, fuera de entidades y repositorios.
 La contraseña original solo debe utilizarse transitoriamente para codificar o
 comparar mediante `PasswordEncoder`: nunca almacenarse, registrarse en logs ni
-incluirse en respuestas. La capa HTTP futura deberá usar DTO que no expongan el
-hash ni acepten campos internos de activación, autoridades o auditoría.
-Este incremento configura la herramienta y sus pruebas; no introduce registro,
+incluirse en respuestas. La capa HTTP de A2.2 utiliza DTO que no exponen el
+hash ni aceptan campos internos de activación, autoridades o auditoría.
+El incremento A2.1 configuró la herramienta y sus pruebas; no introdujo registro,
 login, JWT, filtros ni una API que reciba o devuelva contraseñas.
 
 Los tests unitarios comprueban coincidencia correcta, rechazo de contraseña
@@ -275,8 +275,9 @@ y [dependencias de Spring Security 7.1.1](https://github.com/spring-projects/spr
 
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
 configuración PostgreSQL, Flyway, hashing Argon2id, modelo JPA de usuario/autoridades
-y repositorio de persistencia. Todavía no incluye registro de usuarios,
-autenticación, reservas, disponibilidad, Kafka, Redis ni integraciones con
+y repositorio de persistencia. A2.2 agrega registro público de usuarios con
+activación inmediata y ROLE_USER. Todavía no incluye login, JWT, autorización de
+recursos, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
 
 ## Modelo persistente de usuario — A2.1
@@ -293,7 +294,7 @@ Login/email se normalizan con `Locale.ROOT`; PostgreSQL también protege su
 unicidad. El ID se genera mediante IDENTITY y no tiene setter público.
 
 La activación inicia en false y puede cambiarse mediante una operación explícita
-del backend; A2.2 deberá activarla durante el registro. Las autoridades se asignan
+del backend; A2.2 la activa durante el registro. Las autoridades se asignan
 desde backend y el getter devuelve una colección no modificable. La relación es
 lazy, sin cascadas sobre authority; la búsqueda por login del repositorio usa un
 EntityGraph para recuperar las autoridades junto al usuario. No se crean roles
@@ -311,3 +312,100 @@ postgres-integration, prueba persistir/recuperar, hash íntegro verificable,
 imageUrl nullable, restricciones únicas, roles y auditoría con PostgreSQL real.
 Usa esquemas temporales de Appointment y los elimina al terminar; no toca Catalog
 ni migra public. La V1 publicada no se modifica en este incremento.
+
+## Registro público de usuarios — A2.2
+
+`POST /api/register`, con `Content-Type: application/json`, permite registrar un
+usuario final sin autenticación. No llama a Catalog ni registra la cuenta técnica
+de la cátedra. El registro no inicia sesión ni entrega un JWT.
+
+| Campo | Regla |
+| --- | --- |
+| `login` | Obligatorio, no blanco, 1–50 caracteres, patrón de login JHipster. |
+| `password` | Obligatoria, no blanca, 4–100 caracteres; se conserva íntegra para calcular el hash, incluidos espacios. |
+| `firstName`, `lastName` | Opcionales, hasta 50 caracteres; admiten nulo o cadena vacía. |
+| `email` | Obligatorio, formato email válido, 5–254 caracteres. |
+| `imageUrl` | Opcional, hasta 256 caracteres; admite nulo o cadena vacía. No se agrega una validación de URL distinta al contrato de referencia. |
+| `langKey` | No blanco, 2–10 caracteres; omitido o nulo toma `es`. No se restringe a una lista de idiomas. |
+
+El rango de contraseña conserva el contrato explícito de
+[ManagedUserVM de JHipster](https://github.com/jhipster/generator-jhipster/blob/main/generators/spring-boot/templates/src/main/java/_package_/web/rest/vm/ManagedUserVM.java.ejs).
+Los límites de perfil corresponden a
+[AdminUserDTO](https://github.com/jhipster/generator-jhipster/blob/main/generators/spring-boot/templates/src/main/java/_package_/service/dto/AdminUserDTO.java.ejs)
+y el patrón de login a
+[generator-constants.ts](https://github.com/jhipster/generator-jhipster/blob/main/generators/generator-constants.ts).
+El backend normaliza login y email con `Locale.ROOT`, de la misma forma que A2.1;
+no recorta la contraseña ni modifica su contenido.
+
+Ejemplo de estructura del request; la contraseña es un placeholder:
+
+```json
+{
+  "login": "persona",
+  "password": "<contraseña-de-4-a-100-caracteres>",
+  "firstName": "Ana",
+  "lastName": "Perez",
+  "email": "persona@example.test",
+  "imageUrl": null,
+  "langKey": "es"
+}
+```
+
+Toda propiedad desconocida provoca `400 INVALID_REQUEST`, incluso si es nula.
+Esto incluye `id`, `activated`, `authorities`, `passwordHash`, `createdBy`,
+`createdDate`, `lastModifiedBy` y `lastModifiedDate`. La política se aplica en el
+DTO con `@JsonAnySetter`, independientemente de la tolerancia global del mapper.
+El ID lo genera PostgreSQL; el backend activa la cuenta, asigna exclusivamente
+`ROLE_USER` y utiliza el login normalizado como actor de creación. No se crean
+autoridades implícitamente: ROLE_USER debe existir por V1.
+
+Un registro exitoso responde `201 Created` con un `RegisterUserResponse` que solo
+contiene `login`, `firstName`, `lastName`, `email`, `imageUrl` y `langKey`. No
+devuelve ID, activación, autoridades, contraseña, hash, auditoría ni tokens. El
+cuerpo de respuesta es una decisión de esta Issue, que exige un DTO seguro; la
+activación inmediata sigue el enunciado y no requiere confirmación por correo.
+
+| HTTP | Código de error | Significado |
+| --- | --- | --- |
+| 400 | `VALIDATION_ERROR` | Campos inválidos; `fields` contiene solo sus nombres. |
+| 400 | `INVALID_REQUEST` | JSON inválido, cuerpo ausente o propiedades no admitidas. |
+| 400 | `LOGIN_ALREADY_EXISTS` | Login duplicado, sin distinguir mayúsculas. |
+| 400 | `EMAIL_ALREADY_EXISTS` | Email duplicado, sin distinguir mayúsculas. |
+| 500 | `REGISTRATION_FAILED` | Fallo interno; no se expone su diagnóstico técnico. |
+
+Los errores usan `ProblemDetail` (`application/problem+json`). Los duplicados
+mantienen `400`, en lugar de la propuesta inicial `409`, por la prioridad dada al
+contrato explícito de
+[AccountResource de JHipster](https://github.com/jhipster/generator-jhipster/blob/main/generators/spring-boot/templates/src/main/java/_package_/web/rest/AccountResource.java.ejs).
+Las respuestas no incluyen valores rechazados, mensajes de parseo ni detalles
+SQL. El manejador de registro registra solo el tipo de excepción ante un fallo
+interno; no registra mensajes, causas, requests ni contraseñas. Los modelos que
+transportan contraseña o hash tienen `toString()` redactado y el password del
+request es de solo escritura para Jackson. Esto no autoriza agregar logging de
+cuerpos HTTP o parámetros sensibles.
+
+El controller valida y mapea DTOs; `RegisterUserUseCase` coordina la operación sin
+importar HTTP, JPA ni Spring Security. `PasswordHasher` usa el `PasswordEncoder`
+Argon2id existente. `UserRegistrationStore` se implementa con
+`JpaUserRegistrationAdapter`, que guarda usuario y relación de autoridad en una
+transacción local mediante `TransactionTemplate`. El hashing ocurre antes de
+abrir esa transacción. `spring.jpa.open-in-view: false` evita mantener una sesión
+JPA abierta durante toda la petición o ejecutar consultas durante la serialización
+HTTP; los datos de respuesta se obtienen dentro del adaptador. Los prechequeos no
+sustituyen los índices únicos de V1:
+el adaptador identifica SQLSTATE `23505` junto con `ux_app_user_login_lower` o
+`ux_app_user_email_lower`, sin interpretar mensajes humanos del driver. Otros
+fallos de persistencia no se clasifican como duplicados.
+
+La verificación normal cubre DTOs, caso de uso, adaptador, conexión del encoder y
+contrato HTTP sin base externa. El test de arranque sustituye únicamente el
+puerto `UserRegistrationStore` por un mock. Bajo `postgres-integration`,
+`UserRegistrationIT` prueba el registro real, restricciones, concurrencia y
+rollback de la cuenta si falla la relación de autoridad. `UserRegistrationHttpIT`
+levanta HTTP en un puerto aleatorio y verifica registro, duplicados, rechazo de
+campos administrativos, errores seguros y persistencia Argon2id. Ambos crean y
+eliminan exclusivamente sus esquemas temporales `appointment_it_<uuid>`.
+
+A2.2 no modifica V1, el encoder, las credenciales de A1.2 ni la infraestructura.
+Login, JWT, filtros de autenticación, verificación por correo y recuperación de
+contraseña quedan fuera de este incremento.
