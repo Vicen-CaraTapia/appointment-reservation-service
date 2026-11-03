@@ -41,9 +41,10 @@ public record RegisterUserRequest(
 		@Size(min = 2, max = 10)
 		String langKey
 ) {
-	// JHipster generators/generator-constants.ts LOGIN_REGEX (Java form).
+	// JHipster login alternatives with explicit grouping and possessive repetition.
+	// Possessive repetition also protects validation of input exceeding @Size.
 	private static final String LOGIN_REGEX =
-			"^(?>[a-zA-Z0-9!$&*+=?^_`{|}~.-]+@[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*)|(?>[_.@A-Za-z0-9-]+)$";
+			"^(?:[a-zA-Z0-9!$&*+=?^_`{|}~.-]++@[a-zA-Z0-9-]++(?:\\.[a-zA-Z0-9-]++)*+|[_.@A-Za-z0-9-]++)$";
 
 	public RegisterUserRequest {
 		if (langKey == null) {

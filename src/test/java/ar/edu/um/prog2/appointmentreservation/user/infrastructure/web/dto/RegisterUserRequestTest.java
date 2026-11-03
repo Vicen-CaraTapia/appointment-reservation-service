@@ -66,9 +66,31 @@ class RegisterUserRequestTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = {"a", "x.y_z-1", "USER@EXAMPLE.COM", "a+b@example.com"})
+	@ValueSource(strings = {"a", "x.y_z-1", "USER@EXAMPLE.COM", "a+b@example.com",
+			"a+b@sub.example.com", "a!b@example.com"})
 	void acceptsJHipsterCompatibleLogins(String login) {
 		assertThat(validator.validate(request(Map.of("login", login)))).isEmpty();
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"a+b@example..com", "a+b@.example.com", "a+b@example.com!",
+			"a+b@example.com/extra", "a+b@exam_ple.com", "prefix a+b@example.com", "a+b@example.com suffix"})
+	void rejectsInvalidEmailStyleLoginsAndPartialMatches(String login) {
+		assertThat(validator.validate(request(Map.of("login", login))))
+				.anySatisfy(violation -> assertThat(violation.getPropertyPath().toString()).isEqualTo("login"));
+	}
+
+	@ParameterizedTest
+	@MethodSource("oversizedLogins")
+	void rejectsOversizedLoginsWithoutOverflowingTheRegexStack(String login) {
+		// @Size and @Pattern are independent constraints: both may run on oversized input.
+		assertThat(validator.validate(request(Map.of("login", login))))
+				.anySatisfy(violation -> assertThat(violation.getPropertyPath().toString()).isEqualTo("login"));
+	}
+
+	static Stream<String> oversizedLogins() {
+		String dottedDomain = "a+b@" + "label.".repeat(20_000) + "test";
+		return Stream.of(dottedDomain, dottedDomain + "!", "a".repeat(100_000) + "!");
 	}
 
 	@Test
