@@ -27,7 +27,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.context.annotation.Import;
+import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -39,8 +42,11 @@ import ar.edu.um.prog2.appointmentreservation.user.application.exception.Duplica
 import ar.edu.um.prog2.appointmentreservation.user.application.model.RegisteredUser;
 import ar.edu.um.prog2.appointmentreservation.user.application.model.RegisterUserCommand;
 import ar.edu.um.prog2.appointmentreservation.user.application.usecase.RegisterUserUseCase;
+import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.FinalUserHttpSecurityConfiguration;
 
-@WebMvcTest(UserRegistrationController.class)
+@WebMvcTest(controllers = UserRegistrationController.class,
+		excludeAutoConfiguration = UserDetailsServiceAutoConfiguration.class)
+@Import(FinalUserHttpSecurityConfiguration.class)
 @ExtendWith(OutputCaptureExtension.class)
 class UserRegistrationControllerTest {
 
@@ -54,6 +60,9 @@ class UserRegistrationControllerTest {
 
 	@MockitoBean
 	private RegisterUserUseCase useCase;
+
+	@MockitoBean
+	private AuthenticationManager authenticationManager;
 
 	@Test
 	void registersWithoutAuthenticationAndReturnsOnlyThePublicProfile(CapturedOutput output) throws Exception {
@@ -169,10 +178,10 @@ class UserRegistrationControllerTest {
 	}
 
 	@Test
-	void preservesUnsupportedMediaTypeAndMethodStatuses() throws Exception {
+	void preservesUnsupportedMediaTypeAndRejectsNonPublicMethods() throws Exception {
 		mvc.perform(post("/api/register").contentType(MediaType.TEXT_PLAIN).content("text"))
 				.andExpect(status().isUnsupportedMediaType());
-		mvc.perform(get("/api/register")).andExpect(status().isMethodNotAllowed());
+		mvc.perform(get("/api/register")).andExpect(status().isUnauthorized());
 		verifyNoInteractions(useCase);
 	}
 

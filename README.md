@@ -42,6 +42,9 @@ aplicación por sí solo. No ejecutes la plantilla como script: contiene placeho
 | `APPOINTMENT_DB_URL` | Sí | URL JDBC PostgreSQL, sin usuario ni contraseña embebidos. |
 | `APPOINTMENT_DB_USERNAME` | Sí | Usuario exclusivo de Appointment. |
 | `APPOINTMENT_DB_PASSWORD` | Sí | Contraseña externa, sin valor predeterminado. |
+| `APPOINTMENT_USER_JWT_SECRET` | Sí | Clave exclusiva para usuarios finales, Base64 de al menos 64 bytes aleatorios. |
+| `APPOINTMENT_USER_JWT_TTL` | No | `1h`; duración normal, positiva y en segundos enteros. |
+| `APPOINTMENT_USER_JWT_REMEMBER_ME_TTL` | No | `7d`; duración larga, positiva y no menor que la normal. |
 | `APPOINTMENT_TEST_DB_URL` | Solo integración | URL de una base descartable de Appointment. |
 | `APPOINTMENT_TEST_DB_USERNAME` | Solo integración | Usuario con permiso de crear esquemas de prueba. |
 | `APPOINTMENT_TEST_DB_PASSWORD` | Solo integración | Contraseña externa para las pruebas PostgreSQL. |
@@ -62,11 +65,26 @@ argumentos de comandos ni a logs. Si guardás secretos en un archivo local,
 restringí sus permisos al propietario (`chmod 600 .env`). Los permisos y el
 archivo ignorado no reemplazan una gestión de secretos para producción.
 
-JWT de usuarios, identidad interna de Catalog, credenciales técnicas de cátedra
-y Kafka se configurarán en sus propias Issues. Se mantendrán como identidades
-separadas y valores externos; esta Issue no define nombres ni secretos futuros.
+La clave de usuarios finales se configura en A2.3. La identidad interna de Catalog,
+las credenciales técnicas de cátedra y Kafka se configurarán en sus propias Issues.
+Esas identidades y sus credenciales permanecen separadas.
 
 ## Ejecutar el servicio
+
+Además de PostgreSQL, configurá `APPOINTMENT_USER_JWT_SECRET` en la shell o IDE
+antes del arranque. Debe ser Base64 estándar de al menos 64 bytes generados por un
+generador criptográfico. Para generar una nueva clave en memoria sin imprimirla
+ni escribir el valor en el historial de comandos, podés usar OpenSSL:
+
+```bash
+APPOINTMENT_USER_JWT_SECRET="$(openssl rand -base64 64 | tr -d '\n')"
+export APPOINTMENT_USER_JWT_SECRET
+```
+
+Conservá la clave en un gestor de secretos o archivo local protegido; no la
+regeneres en cada arranque si necesitás conservar la validez de tokens emitidos.
+Una clave ausente, mal codificada o demasiado corta impide iniciar el servicio.
+No reutilices tokens ni claves técnicas de cátedra o de integración con Catalog.
 
 ```bash
 ./mvnw spring-boot:run
@@ -123,12 +141,18 @@ read -r -s -p 'APPOINTMENT_DB_PASSWORD: ' APPOINTMENT_DB_PASSWORD
 echo
 export APPOINTMENT_DB_PASSWORD
 
+# Supply an existing protected final-user signing key, without printing it.
+read -r -s -p 'APPOINTMENT_USER_JWT_SECRET (Base64): ' APPOINTMENT_USER_JWT_SECRET
+echo
+export APPOINTMENT_USER_JWT_SECRET
+
 docker run -d --name appointment-service-local \
   --network project-infrastructure_appointment-db-network \
   -p 127.0.0.1:8082:8082 \
   -e APPOINTMENT_DB_URL \
   -e APPOINTMENT_DB_USERNAME \
   -e APPOINTMENT_DB_PASSWORD \
+  -e APPOINTMENT_USER_JWT_SECRET \
   appointment-reservation-service:local
 ```
 
@@ -276,7 +300,9 @@ y [dependencias de Spring Security 7.1.1](https://github.com/spring-projects/spr
 El servicio incluye la base ejecutable de Spring Boot, Maven Wrapper, Actuator,
 configuración PostgreSQL, Flyway, hashing Argon2id, modelo JPA de usuario/autoridades
 y repositorio de persistencia. A2.2 agrega registro público de usuarios con
-activación inmediata y ROLE_USER. Todavía no incluye login, JWT, autorización de
+activación inmediata y ROLE_USER. A2.3 prepara el proveedor de autenticación,
+la configuración de firma JWT y la cadena HTTP stateless. Todavía no expone el
+endpoint de login ni emite JWT desde una API, ni incluye autorización de
 recursos, reservas, disponibilidad, Kafka, Redis ni integraciones con
 Catalog o la cátedra.
 
@@ -409,3 +435,47 @@ eliminan exclusivamente sus esquemas temporales `appointment_it_<uuid>`.
 A2.2 no modifica V1, el encoder, las credenciales de A1.2 ni la infraestructura.
 Login, JWT, filtros de autenticación, verificación por correo y recuperación de
 contraseña quedan fuera de este incremento.
+
+## Seguridad y firma de usuarios finales — incremento A2.3
+
+`FinalUserDetailsService` busca exclusivamente por login sin distinguir mayúsculas
+y convierte el resultado de persistencia a `FinalUserPrincipal`; no busca por
+email ni devuelve entidades JPA a capas externas. El principal conserva el ID y
+las autoridades del usuario. Su `toString()` está redactado y Spring Security
+borra sus credenciales después de una autenticación exitosa.
+
+`FinalUserAuthenticationConfiguration` conecta un `DaoAuthenticationProvider`
+con ese servicio y el mismo bean Argon2id de A2.1. `ProviderManager` rechaza
+contraseñas incorrectas, identidades desconocidas y usuarios inactivos. La
+traducción a un 401 genérico del endpoint de autenticación corresponde al siguiente
+incremento: aún no existe `POST /api/authenticate` como controller.
+
+`FinalUserHttpSecurityConfiguration` mantiene públicos exclusivamente
+`POST /api/register`, el futuro `POST /api/authenticate` y GET/HEAD de
+`/actuator/health`. Las demás peticiones se deniegan hasta A2.4, incluso con una
+identidad autenticada. No se agrega validación Bearer anticipadamente. El
+renderizado de errores del contenedor puede ejecutarse en un dispatch ERROR;
+esto no permite acceder directamente a `/error`. No hay formularios de login,
+HTTP Basic, sesiones persistentes ni cookies de remember-me. CSRF se desactiva
+porque el mecanismo aprobado utiliza credenciales explícitas y JWT, sin
+autenticación automática por cookies de sesión.
+
+Spring Boot 4.1.1 administra Spring Security y OAuth2 JOSE 7.1.1. La firma se
+prepara con `NimbusJwtEncoder` y una clave `HmacSHA512`; no se agrega JJWT,
+otro encoder de contraseñas ni un decoder/filtro Bearer de producción.
+`FinalUserJwtProperties` distingue la configuración de usuario final del resto
+de las identidades. El issuer reservado es `appointment-reservation-service` y
+la audiencia reservada para KMP es `turnos-kmp-app`.
+
+La validación de clave ocurre al crear el bean firmante, con mensajes fijos que
+no incluyen el valor recibido ni causas del decoder Base64. Las duraciones deben
+ser positivas, expresarse en segundos enteros y la duración remember-me no puede
+ser menor que la normal. El objeto de propiedades también tiene `toString()`
+redactado. Ninguna clave real se guarda en ejemplos o recursos de prueba.
+
+Los tests generan claves aleatorias efímeras en memoria. La verificación normal
+no requiere `APPOINTMENT_USER_JWT_SECRET` ni PostgreSQL externo. Los tests MVC
+cargan explícitamente la cadena real de seguridad y excluyen el usuario de
+desarrollo automático de Spring; el test de bootstrap sustituye los límites de
+persistencia por mocks. Los tests PostgreSQL mantienen sus esquemas temporales
+aislados y reciben la clave de prueba por propiedades internas del contexto.

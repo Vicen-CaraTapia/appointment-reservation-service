@@ -1,5 +1,7 @@
 package ar.edu.um.prog2.appointmentreservation;
 
+import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -172,6 +174,7 @@ class FlywayMigrationIT {
 
 	private ConfigurableApplicationContext start(String location) {
 		Map<String, Object> properties = new HashMap<>();
+		properties.put(FinalUserJwtTestSupport.SECRET_PROPERTY, FinalUserJwtTestSupport.signingSecret());
 		properties.put("spring.datasource.url", url);
 		properties.put("spring.datasource.username", username);
 		properties.put("spring.datasource.password", password);

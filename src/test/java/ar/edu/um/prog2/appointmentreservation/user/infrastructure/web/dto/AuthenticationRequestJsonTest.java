@@ -12,7 +12,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.http.MediaType;
+import org.springframework.context.annotation.Import;
+import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.converter.json.JacksonJsonHttpMessageConverter;
 import org.springframework.mock.http.MockHttpInputMessage;
@@ -25,10 +28,13 @@ import tools.jackson.databind.json.JsonMapper;
 
 import ar.edu.um.prog2.appointmentreservation.user.application.usecase.RegisterUserUseCase;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.web.UserRegistrationController;
+import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.FinalUserHttpSecurityConfiguration;
 
 // Loads the existing MVC slice; no authentication endpoint is introduced by this test.
 @WebMvcTest(controllers = UserRegistrationController.class,
+		excludeAutoConfiguration = UserDetailsServiceAutoConfiguration.class,
 		properties = "spring.jackson.deserialization.fail-on-unknown-properties=false")
+@Import(FinalUserHttpSecurityConfiguration.class)
 class AuthenticationRequestJsonTest {
 
 	private static final String VALID_JSON = """
@@ -40,6 +46,9 @@ class AuthenticationRequestJsonTest {
 
 	@MockitoBean
 	private RegisterUserUseCase registration;
+
+	@MockitoBean
+	private AuthenticationManager authenticationManager;
 
 	private final JsonMapper permissiveMapper = JsonMapper.builder()
 			.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
