@@ -6,13 +6,13 @@ import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import ar.edu.um.prog2.appointmentreservation.user.application.port.out.PasswordHasher;
-import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.PasswordEncodingConfiguration;
+import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.FinalUserSecurityConfiguration;
 
 class UserRegistrationConfigurationTest {
 
 	@Test
 	void hashingPortUsesTheExistingArgon2idEncoder() {
-		PasswordEncoder encoder = new PasswordEncodingConfiguration().passwordEncoder();
+		PasswordEncoder encoder = new FinalUserSecurityConfiguration().passwordEncoder();
 		PasswordHasher hasher = new UserRegistrationConfiguration().passwordHasher(encoder);
 		String encoded = hasher.hash("  test-only passphrase  ");
 		assertThat(encoded).startsWith("$argon2id$v=19$m=19456,t=2,p=1$");

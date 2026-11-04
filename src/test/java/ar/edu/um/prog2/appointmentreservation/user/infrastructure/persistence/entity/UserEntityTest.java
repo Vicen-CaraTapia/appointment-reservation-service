@@ -10,11 +10,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.PasswordEncodingConfiguration;
+import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.FinalUserSecurityConfiguration;
 
 class UserEntityTest {
 
-	private static final String ENCODED_PASSWORD = new PasswordEncodingConfiguration()
+	private static final String ENCODED_PASSWORD = new FinalUserSecurityConfiguration()
 			.passwordEncoder().encode("test-only-entity-passphrase");
 
 	@Test

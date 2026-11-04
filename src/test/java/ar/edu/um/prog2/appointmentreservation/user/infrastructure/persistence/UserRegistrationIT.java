@@ -27,6 +27,7 @@ import org.springframework.core.env.MapPropertySource;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
+import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.application.exception.DuplicateUserException;
 import ar.edu.um.prog2.appointmentreservation.user.application.exception.DuplicateUserException.Field;
 import ar.edu.um.prog2.appointmentreservation.user.application.model.NewRegisteredUser;
@@ -66,6 +67,7 @@ class UserRegistrationIT {
 			schema = candidate;
 		}
 		Map<String, Object> properties = Map.of(
+				FinalUserJwtTestSupport.SECRET_PROPERTY, FinalUserJwtTestSupport.signingSecret(),
 				"spring.datasource.url", url,
 				"spring.datasource.username", username,
 				"spring.datasource.password", password,

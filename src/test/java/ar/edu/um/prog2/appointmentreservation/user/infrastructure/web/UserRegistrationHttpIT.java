@@ -31,6 +31,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import tools.jackson.databind.json.JsonMapper;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
+import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.application.exception.DuplicateUserException.Field;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.AuthorityEntity;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.repository.UserJpaRepository;
@@ -64,6 +65,7 @@ class UserRegistrationHttpIT {
 			schema = candidate;
 		}
 		Map<String, Object> properties = Map.of(
+				FinalUserJwtTestSupport.SECRET_PROPERTY, FinalUserJwtTestSupport.signingSecret(),
 				"spring.datasource.url", url,
 				"spring.datasource.username", username,
 				"spring.datasource.password", password,
