@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import java.util.List;
 
@@ -16,17 +19,20 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import ar.edu.um.prog2.appointmentreservation.user.infrastructure.config.UserRegistrationConfiguration;
+
 class FinalUserAuthenticationConfigurationTest {
 
 	private static final String PASSWORD = "  Test-only passphrase  ";
 	private final FinalUserDetailsService users = mock(FinalUserDetailsService.class);
-	private final PasswordEncoder encoder = new PasswordEncodingConfiguration().passwordEncoder();
-	private final AuthenticationManager manager = new FinalUserAuthenticationConfiguration()
+	private final PasswordEncoder encoder = spy(new FinalUserSecurityConfiguration().passwordEncoder());
+	private final AuthenticationManager manager = new FinalUserSecurityConfiguration()
 			.finalUserAuthenticationManager(users, encoder);
 
 	@Test
 	void authenticatesWithTheExistingArgon2idEncoderAndErasesCredentials() {
-		when(users.loadUserByUsername("alice")).thenReturn(principal(true));
+		var loaded = principal(true);
+		when(users.loadUserByUsername("alice")).thenReturn(loaded);
 		var authentication = manager.authenticate(UsernamePasswordAuthenticationToken.unauthenticated("alice", PASSWORD));
 		assertThat(authentication.isAuthenticated()).isTrue();
 		assertThat(authentication.getName()).isEqualTo("alice");
@@ -35,18 +41,21 @@ class FinalUserAuthenticationConfigurationTest {
 		assertThat(user.userId()).isEqualTo(42);
 		assertThat(user.getPassword()).isNull();
 		assertThat(user.getAuthorities()).extracting("authority").containsExactly("ROLE_USER");
+		verify(encoder).matches(org.mockito.ArgumentMatchers.eq(PASSWORD), anyString());
 	}
 
 	@Test
 	void rejectsIncorrectPassword() {
-		when(users.loadUserByUsername("alice")).thenReturn(principal(true));
+		var loaded = principal(true);
+		when(users.loadUserByUsername("alice")).thenReturn(loaded);
 		assertThatThrownBy(() -> manager.authenticate(UsernamePasswordAuthenticationToken.unauthenticated(
 				"alice", "incorrect-test-passphrase"))).isInstanceOf(BadCredentialsException.class);
 	}
 
 	@Test
 	void doesNotTrimPasswordBeforeVerification() {
-		when(users.loadUserByUsername("alice")).thenReturn(principal(true));
+		var loaded = principal(true);
+		when(users.loadUserByUsername("alice")).thenReturn(loaded);
 		assertThatThrownBy(() -> manager.authenticate(UsernamePasswordAuthenticationToken.unauthenticated(
 				"alice", PASSWORD.strip()))).isInstanceOf(BadCredentialsException.class);
 	}
@@ -61,13 +70,15 @@ class FinalUserAuthenticationConfigurationTest {
 
 	@Test
 	void rejectsInactiveUser() {
-		when(users.loadUserByUsername("alice")).thenReturn(principal(false));
+		var loaded = principal(false);
+		when(users.loadUserByUsername("alice")).thenReturn(loaded);
 		assertThatThrownBy(() -> manager.authenticate(UsernamePasswordAuthenticationToken.unauthenticated(
 				"alice", PASSWORD))).isInstanceOf(DisabledException.class);
 	}
 
 	private FinalUserPrincipal principal(boolean active) {
-		return new FinalUserPrincipal(42L, "alice", encoder.encode(PASSWORD), active,
+		String hash = new UserRegistrationConfiguration().passwordHasher(encoder).hash(PASSWORD);
+		return new FinalUserPrincipal(42L, "alice", hash, active,
 				List.of(new SimpleGrantedAuthority("ROLE_USER")));
 	}
 }

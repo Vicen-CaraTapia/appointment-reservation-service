@@ -9,7 +9,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 class PasswordEncodingConfigurationTest {
 
-	private final PasswordEncoder encoder = new PasswordEncodingConfiguration().passwordEncoder();
+	private final PasswordEncoder encoder = new FinalUserSecurityConfiguration().passwordEncoder();
 
 	@Test
 	void matchesTheCorrectPassword() {
