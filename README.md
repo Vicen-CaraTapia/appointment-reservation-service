@@ -39,6 +39,7 @@ aplicación por sí solo. No ejecutes la plantilla como script: contiene placeho
 | Variable | Necesaria | Valor predeterminado / propósito |
 | --- | --- | --- |
 | `SERVER_PORT` | No | `8082`; puerto HTTP. |
+| `APPOINTMENT_CORS_ALLOWED_ORIGINS` | No | Lista separada por comas de orígenes web exactos; vacía por defecto. |
 | `APPOINTMENT_DB_URL` | Sí | URL JDBC PostgreSQL, sin usuario ni contraseña embebidos. |
 | `APPOINTMENT_DB_USERNAME` | Sí | Usuario exclusivo de Appointment. |
 | `APPOINTMENT_DB_PASSWORD` | Sí | Contraseña externa, sin valor predeterminado. |
@@ -58,6 +59,14 @@ El perfil Spring `test`, definido exclusivamente en recursos de test, desactiva
 el datasource para el test de bootstrap/HTTP. No se empaqueta en el JAR.
 El perfil Maven `postgres-integration` selecciona las pruebas con PostgreSQL real;
 no activa el perfil Spring `test` y exige las variables `APPOINTMENT_TEST_DB_*`.
+
+Para consumir la API desde un cliente web, configurá
+`APPOINTMENT_CORS_ALLOWED_ORIGINS` con el origen exacto de ese cliente, por
+ejemplo `http://localhost:3000`. Se permiten Authorization y Content-Type,
+incluyendo solicitudes preflight, y se expone la cabecera Authorization usada
+por el login. CORS no permite cookies ni credenciales automáticas. El valor vacío
+no concede acceso a navegadores de otros orígenes; los clientes móviles nativos
+no necesitan CORS. No uses `*` ni copies orígenes de ejemplo a producción.
 
 Git ignora `.env`, `.env.*` y `application-local.*` de los formatos admitidos,
 pero conserva `.env.example`. No agregues secretos al código, a URLs JDBC, a

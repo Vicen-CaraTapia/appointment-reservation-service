@@ -4,8 +4,11 @@ import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -13,6 +16,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -30,7 +36,8 @@ import tools.jackson.databind.json.JsonMapper;
 public class FinalUserHttpSecurityConfiguration {
 
 	@Bean
-	public SecurityFilterChain finalUserSecurityFilterChain(HttpSecurity http, JwtDecoder decoder, JsonMapper json)
+	public SecurityFilterChain finalUserSecurityFilterChain(HttpSecurity http, JwtDecoder decoder, JsonMapper json,
+			@Value("${appointment.cors.allowed-origins:}") String configuredOrigins)
 			throws Exception {
 		AuthenticationEntryPoint unauthorized = (request, response, failure) -> securityError(response, json, HttpStatus.UNAUTHORIZED);
 		AccessDeniedHandler forbidden = (request, response, failure) -> securityError(response, json, HttpStatus.FORBIDDEN);
@@ -39,6 +46,7 @@ public class FinalUserHttpSecurityConfiguration {
 		authorities.setAuthorityPrefix("");
 		var authentication = new JwtAuthenticationConverter();
 		authentication.setJwtGrantedAuthoritiesConverter(authorities);
+		var cors = corsConfigurationSource(configuredOrigins);
 		return http
 				// Authentication uses explicit credentials/JWTs, not browser session cookies.
 				.csrf(AbstractHttpConfigurer::disable)
@@ -47,6 +55,7 @@ public class FinalUserHttpSecurityConfiguration {
 				.logout(AbstractHttpConfigurer::disable)
 				.requestCache(AbstractHttpConfigurer::disable)
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+				.cors(configuration -> configuration.configurationSource(cors))
 				.exceptionHandling(errors -> errors.authenticationEntryPoint(unauthorized).accessDeniedHandler(forbidden))
 				.oauth2ResourceServer(resource -> resource
 						.jwt(jwt -> jwt.decoder(decoder).jwtAuthenticationConverter(authentication))
@@ -60,6 +69,24 @@ public class FinalUserHttpSecurityConfiguration {
 						.requestMatchers("/api/**").authenticated()
 						.anyRequest().denyAll())
 				.build();
+	}
+
+	private static CorsConfigurationSource corsConfigurationSource(String configuredOrigins) {
+		List<String> origins = Arrays.stream(configuredOrigins.split(","))
+				.map(String::trim).filter(origin -> !origin.isEmpty()).toList();
+		if (origins.contains("*")) {
+			throw new IllegalStateException("Appointment CORS requires explicit origins; wildcard is not allowed");
+		}
+		var configuration = new CorsConfiguration();
+		configuration.setAllowedOrigins(origins);
+		configuration.setAllowedMethods(List.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+		configuration.setAllowedHeaders(List.of(HttpHeaders.AUTHORIZATION, HttpHeaders.CONTENT_TYPE));
+		configuration.setExposedHeaders(List.of(HttpHeaders.AUTHORIZATION));
+		configuration.setAllowCredentials(false);
+		configuration.setMaxAge(3600L);
+		var source = new UrlBasedCorsConfigurationSource();
+		source.registerCorsConfiguration("/api/**", configuration);
+		return source;
 	}
 
 	private static void securityError(HttpServletResponse response, JsonMapper json, HttpStatus status) throws IOException {

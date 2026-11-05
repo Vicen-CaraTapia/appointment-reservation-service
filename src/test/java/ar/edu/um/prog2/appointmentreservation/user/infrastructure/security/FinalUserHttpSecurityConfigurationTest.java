@@ -7,6 +7,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -53,7 +54,8 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.web.UserRegist
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 
 @WebMvcTest(controllers = UserRegistrationController.class,
-		excludeAutoConfiguration = UserDetailsServiceAutoConfiguration.class)
+		excludeAutoConfiguration = UserDetailsServiceAutoConfiguration.class,
+		properties = "appointment.cors.allowed-origins=https://app.example.test")
 @Import({FinalUserHttpSecurityConfiguration.class, FinalUserHttpSecurityConfigurationTest.JwtTestConfiguration.class,
 		FinalUserHttpSecurityConfigurationTest.IdentityProbe.class})
 class FinalUserHttpSecurityConfigurationTest {
@@ -172,6 +174,35 @@ class FinalUserHttpSecurityConfigurationTest {
 				List.of(new SimpleGrantedAuthority("ROLE_USER")));
 		session.setAttribute("SPRING_SECURITY_CONTEXT", new SecurityContextImpl(identity));
 		mvc.perform(get("/api/test/identity").session(session)).andExpect(status().isUnauthorized());
+	}
+
+	@Test
+	void corsAllowsOnlyConfiguredOriginAndExposesAuthorizationHeader() throws Exception {
+		mvc.perform(options("/api/test/identity")
+				.header(HttpHeaders.ORIGIN, "https://app.example.test")
+				.header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET")
+				.header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization,content-type"))
+				.andExpect(status().isOk())
+				.andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, "https://app.example.test"))
+				.andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS,
+						org.hamcrest.Matchers.containsString("GET")))
+				.andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS,
+						org.hamcrest.Matchers.containsString("authorization")))
+				.andExpect(header().string(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, "Authorization"))
+				.andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS));
+	}
+
+	@Test
+	void corsRejectsUnconfiguredOriginsAndWildcardConfiguration() throws Exception {
+		mvc.perform(options("/api/test/identity")
+				.header(HttpHeaders.ORIGIN, "https://unapproved.example.test")
+				.header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET"))
+				.andExpect(status().isForbidden())
+				.andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+		org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+				new FinalUserHttpSecurityConfiguration().finalUserSecurityFilterChain(null, null, null, "*"))
+				.isInstanceOf(IllegalStateException.class)
+				.hasMessage("Appointment CORS requires explicit origins; wildcard is not allowed");
 	}
 
 	private static String token(String secret, Clock clock) {
