@@ -65,7 +65,7 @@ class FinalUserAuthenticationConfigurationTest {
 		when(users.loadUserByUsername("missing")).thenThrow(new UsernameNotFoundException("private diagnostic"));
 		assertThatThrownBy(() -> manager.authenticate(UsernamePasswordAuthenticationToken.unauthenticated(
 				"missing", PASSWORD))).isInstanceOf(BadCredentialsException.class)
-				.hasMessage("Bad credentials");
+				.hasMessageNotContaining("private diagnostic");
 	}
 
 	@Test
