@@ -15,7 +15,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.http.MediaType;
 import org.springframework.context.annotation.Import;
-import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.converter.json.JacksonJsonHttpMessageConverter;
 import org.springframework.mock.http.MockHttpInputMessage;
@@ -48,7 +48,7 @@ class AuthenticationRequestJsonTest {
 	private RegisterUserUseCase registration;
 
 	@MockitoBean
-	private AuthenticationManager authenticationManager;
+	private JwtDecoder jwtDecoder;
 
 	private final JsonMapper permissiveMapper = JsonMapper.builder()
 			.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();

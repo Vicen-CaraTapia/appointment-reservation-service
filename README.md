@@ -39,6 +39,7 @@ aplicación por sí solo. No ejecutes la plantilla como script: contiene placeho
 | Variable | Necesaria | Valor predeterminado / propósito |
 | --- | --- | --- |
 | `SERVER_PORT` | No | `8082`; puerto HTTP. |
+| `APPOINTMENT_CORS_ALLOWED_ORIGINS` | No | Lista separada por comas de orígenes web exactos; vacía por defecto. |
 | `APPOINTMENT_DB_URL` | Sí | URL JDBC PostgreSQL, sin usuario ni contraseña embebidos. |
 | `APPOINTMENT_DB_USERNAME` | Sí | Usuario exclusivo de Appointment. |
 | `APPOINTMENT_DB_PASSWORD` | Sí | Contraseña externa, sin valor predeterminado. |
@@ -58,6 +59,14 @@ El perfil Spring `test`, definido exclusivamente en recursos de test, desactiva
 el datasource para el test de bootstrap/HTTP. No se empaqueta en el JAR.
 El perfil Maven `postgres-integration` selecciona las pruebas con PostgreSQL real;
 no activa el perfil Spring `test` y exige las variables `APPOINTMENT_TEST_DB_*`.
+
+Para consumir la API desde un cliente web, configurá
+`APPOINTMENT_CORS_ALLOWED_ORIGINS` con el origen exacto de ese cliente, por
+ejemplo `http://localhost:3000`. Se permiten Authorization y Content-Type,
+incluyendo solicitudes preflight, y se expone la cabecera Authorization usada
+por el login. CORS no permite cookies ni credenciales automáticas. El valor vacío
+no concede acceso a navegadores de otros orígenes; los clientes móviles nativos
+no necesitan CORS. No uses `*` ni copies orígenes de ejemplo a producción.
 
 Git ignora `.env`, `.env.*` y `application-local.*` de los formatos admitidos,
 pero conserva `.env.example`. No agregues secretos al código, a URLs JDBC, a
@@ -303,9 +312,9 @@ configuración PostgreSQL, Flyway, hashing Argon2id, modelo JPA de usuario/autor
 y repositorio de persistencia. A2.2 agrega registro público de usuarios con
 activación inmediata y ROLE_USER. A2.3 agrega login por credenciales y emisión
 de JWT propios mediante `/api/authenticate`, con una cadena HTTP stateless.
-Todavía no incluye validación Bearer ni autorización de
-recursos, reservas, disponibilidad, Kafka, Redis ni integraciones con
-Catalog o la cátedra.
+A2.4 incorpora validación Bearer e identidad autenticada para las APIs de usuario.
+Todavía no incluye CORS, control de propiedad de reservas, reservas,
+disponibilidad, Kafka, Redis ni integraciones con Catalog o la cátedra.
 
 ## Modelo persistente de usuario — A2.1
 
@@ -456,8 +465,9 @@ enviado al manager también se limpia al terminar, incluso ante un rechazo.
 
 `FinalUserHttpSecurityConfiguration` mantiene públicos exclusivamente
 `POST /api/register`, `POST /api/authenticate` y GET/HEAD de
-`/actuator/health`. Las demás peticiones se deniegan hasta A2.4, incluso con una
-identidad autenticada. No se agrega validación Bearer anticipadamente. El
+`/actuator/health`. Desde el segundo incremento de A2.4, las demás rutas de
+`/api/**` requieren un JWT válido de usuario final; el resto de las rutas
+permanece denegado. El
 renderizado de errores del contenedor puede ejecutarse en un dispatch ERROR;
 esto no permite acceder directamente a `/error`. No hay formularios de login,
 HTTP Basic, sesiones persistentes ni cookies de remember-me. CSRF se desactiva
@@ -466,7 +476,8 @@ autenticación automática por cookies de sesión.
 
 Spring Boot 4.1.1 administra Spring Security y OAuth2 JOSE 7.1.1. La firma se
 realiza con `NimbusJwtEncoder` y una clave `HmacSHA512`; no se agrega JJWT,
-otro encoder de contraseñas ni un decoder/filtro Bearer de producción.
+otro encoder de contraseñas ni filtros JWT propios. A2.4 incorpora el decoder
+y el soporte Bearer de OAuth2 Resource Server administrado por Spring Boot.
 `FinalUserJwtProperties` distingue la configuración de usuario final del resto
 de las identidades. El issuer es `appointment-reservation-service` y
 la audiencia para KMP es `turnos-kmp-app`. El issuer es un identificador textual,
@@ -553,13 +564,15 @@ token de aplicación y response tienen `toString()` redactado.
 
 Las pruebas unitarias verifican firma con clave correcta/incorrecta, algoritmo,
 claims, duraciones normal/remember-me y configurables, expiración, normalización,
-errores y ausencia de tokens o contraseñas en los logs capturados. Los decoders
-JWT usados para esas verificaciones existen exclusivamente en tests.
+errores y ausencia de tokens o contraseñas en los logs capturados. Desde A2.4,
+las pruebas del decoder usan también la configuración productiva y JWT reales
+firmados con claves efímeras; no requieren una clave externa ni PostgreSQL.
 `FinalUserAuthenticationHttpIT`, bajo `postgres-integration`, prueba registro y
 login reales, los dos TTL, rechazo de email como identidad alternativa, cuentas
 inactivas, errores 401 idénticos y un fallo de almacenamiento inyectado solo en
 su esquema temporal. También confirma que health y registro siguen públicos,
-y que el JWT emitido todavía no habilita otras APIs: esa validación es A2.4.
+y que el JWT emitido supera la autenticación Bearer: una ruta inexistente
+devuelve 404 en MVC, en lugar del rechazo 401 anterior a A2.4.
 
 La configuración de contraseñas, autenticación y composición JWT se consolida en
 `FinalUserSecurityConfiguration`. La cadena HTTP permanece en su configuración
@@ -569,3 +582,64 @@ de Spring. Su construcción como singleton no lazy valida clave y duraciones al
 arrancar, con los mismos mensajes protegidos. El reloj sigue siendo inyectable
 en su constructor para las pruebas. Registro y autenticación reciben el mismo
 bean Argon2id; no se modifican algoritmo, parámetros ni contrato HTTP.
+
+
+## Validación Bearer e identidad autenticada — incremento A2.4
+
+Las APIs protegidas reciben el JWT exclusivamente mediante
+`Authorization: Bearer <jwt-usuario-final>`. No se aceptan tokens desde cookies,
+formularios ni parámetros de consulta. OAuth2 Resource Server procesa la
+cabecera mediante los filtros estándar de Spring Security, utilizando el
+`JwtDecoder` de `FinalUserSecurityConfiguration`.
+
+El decoder reutiliza la clave externa de A2.3 y la misma rutina de validación de
+Base64 y longitud mínima. Encoder y decoder mantienen sus propias instancias
+criptográficas privadas; no hay un segundo secreto ni beans `SecretKey` o
+`JwtEncoder`. Solamente se acepta HS512. Se exige `exp` y se validan expiración y
+`nbf`, si está presente, sin tolerancia temporal adicional. Se comprueban el
+issuer exacto, la audiencia KMP, un `sub` no blanco, un `userId` numérico entero
+positivo representable como `long` y un `auth` no vacío con roles `ROLE_*`
+separados por un único espacio. También se comprueban los tipos originales de
+claims firmados para evitar que las conversiones de Nimbus oculten valores mal
+formados, por ejemplo un sujeto numérico convertido automáticamente a texto.
+
+`JwtAuthenticationConverter` usa `sub` como nombre y convierte `auth` en
+autoridades sin agregar `SCOPE_`. El principal del `SecurityContext` es el `Jwt`
+validado proporcionado por Spring, diferente del principal utilizado para
+comprobar contraseñas durante el login. No se crea otro tipo de principal.
+Los futuros adaptadores web podrán obtener ese principal con
+`@AuthenticationPrincipal Jwt` y entregar el identificador autenticado al caso
+de uso correspondiente. Un `userId` libre enviado por KMP no establece ni
+modifica esa identidad. No se introduce un puerto de usuario actual antes de
+que un caso de uso concreto lo necesite.
+
+Spring Security 7 añade `FACTOR_BEARER` al contexto como metadato del mecanismo
+de autenticación. Ese marcador no se incorpora al JWT ni sustituye los roles
+persistidos. Cada petición vuelve a validar su Bearer token; no se crea una
+sesión y no se recupera autenticación de una sesión HTTP existente.
+
+| Petición | Política |
+| --- | --- |
+| `POST /api/register` y `POST /api/authenticate` sin token | Públicas. |
+| `GET` y `HEAD /actuator/health` sin token | Públicos. |
+| Resto de `/api/**` | Requiere JWT válido. |
+| Otras rutas, incluidos otros endpoints Actuator | Denegadas. |
+
+Un Bearer inválido se rechaza incluso si acompaña una petición a una ruta
+pública; `permitAll` no omite el procesamiento de una credencial presentada.
+Los errores de filtros usan `application/problem+json`, `Cache-Control:
+no-store` y detalles fijos: 401 con código `UNAUTHORIZED` y desafío
+`WWW-Authenticate: Bearer`; 403 con código `ACCESS_DENIED`. No incluyen el token,
+la clave ni la causa técnica del rechazo. Los errores propios del login
+conservan su contrato de A2.3, incluido `INVALID_CREDENTIALS`.
+
+Los tests HTTP usan el decoder real y tokens emitidos con claves efímeras.
+Comprueban identidad, roles, suplantación por parámetros, rechazo de tokens
+inválidos, vencidos o firmados con otra clave, ausencia de sesión, aislamiento
+entre peticiones y errores 401/403. El endpoint que muestra identidad existe
+únicamente en tests y está excluido del escaneo normal de componentes.
+
+Este incremento no agrega CORS, control de propiedad de reservas ni endpoints
+de negocio. La desactivación de una cuenta impide nuevos logins; los JWT ya
+emitidos mantienen su validez hasta expirar. No se consulta la base de datos por
+cada petición ni se implementa revocación de tokens en este alcance.
