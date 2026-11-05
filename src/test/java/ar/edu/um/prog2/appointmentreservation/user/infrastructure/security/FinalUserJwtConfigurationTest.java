@@ -20,6 +20,8 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
@@ -45,6 +47,7 @@ class FinalUserJwtConfigurationTest {
 			assertThat(properties.getRememberMeTtl()).isEqualTo(Duration.ofDays(7));
 			assertThat(properties.toString()).isEqualTo("FinalUserJwtProperties[redacted]");
 			assertThat(context).hasSingleBean(PasswordEncoder.class).hasSingleBean(NimbusFinalUserTokenIssuer.class)
+					.hasSingleBean(JwtDecoder.class)
 					.doesNotHaveBean(SecretKey.class).doesNotHaveBean(JwtEncoder.class);
 		});
 		assertThat(output.getAll()).doesNotContain(secret);
@@ -109,8 +112,10 @@ class FinalUserJwtConfigurationTest {
 		String secret = FinalUserJwtTestSupport.generateSecret();
 		withSecret(secret).run(context -> {
 			SecretKey key = new SecretKeySpec(Base64.getDecoder().decode(secret), "HmacSHA512");
-			var user = new FinalUserPrincipal(42, "user", "test-only-hash", true, List.of());
+			var user = new FinalUserPrincipal(42, "user", "test-only-hash", true,
+					List.of(new SimpleGrantedAuthority("ROLE_USER")));
 			String token = context.getBean(NimbusFinalUserTokenIssuer.class).issue(user, false).value();
+			assertThat(context.getBean(JwtDecoder.class).decode(token).getSubject()).isEqualTo("user");
 			var decoded = NimbusJwtDecoder.withSecretKey(key).macAlgorithm(MacAlgorithm.HS512).build().decode(token);
 			assertThat(decoded.getHeaders()).containsEntry("alg", "HS512");
 			assertThat(decoded.getSubject()).isEqualTo("user");

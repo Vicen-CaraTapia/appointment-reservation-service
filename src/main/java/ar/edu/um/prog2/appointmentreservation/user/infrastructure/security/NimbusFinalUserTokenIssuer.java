@@ -8,6 +8,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
@@ -52,6 +53,11 @@ public final class NimbusFinalUserTokenIssuer {
 		if (properties.getRememberMeTtl().compareTo(properties.getTtl()) < 0) {
 			throw new IllegalStateException("Final-user JWT remember-me TTL must not be shorter than normal TTL");
 		}
+		return new NimbusJwtEncoder(new ImmutableSecret<>(signingKey(properties)));
+	}
+
+	// Shared validation for issuance and decoding; key material is never a Spring bean.
+	static SecretKey signingKey(FinalUserJwtProperties properties) {
 		String secret = properties.getBase64Secret();
 		if (secret == null || secret.isBlank()) {
 			throw new IllegalStateException("Final-user JWT signing key is required");
@@ -67,7 +73,7 @@ public final class NimbusFinalUserTokenIssuer {
 			if (decoded.length < 64) {
 				throw new IllegalStateException("Final-user JWT signing key requires at least 64 decoded bytes");
 			}
-			return new NimbusJwtEncoder(new ImmutableSecret<>(new SecretKeySpec(decoded, "HmacSHA512")));
+			return new SecretKeySpec(decoded, "HmacSHA512");
 		}
 		finally {
 			Arrays.fill(decoded, (byte) 0);
