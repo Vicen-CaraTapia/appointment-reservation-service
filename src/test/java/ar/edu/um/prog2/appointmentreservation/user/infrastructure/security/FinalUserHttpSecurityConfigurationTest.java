@@ -124,7 +124,6 @@ class FinalUserHttpSecurityConfigurationTest {
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.login").value("alice"))
 				.andExpect(jsonPath("$.userId").value(42))
-				.andExpect(jsonPath("$.authorities[0]").value("ROLE_USER"))
 				.andExpect(jsonPath("$.authorities").value(org.hamcrest.Matchers.containsInAnyOrder("ROLE_USER", "FACTOR_BEARER")))
 				.andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
 				.andExpect(result -> assertThat(result.getRequest().getSession(false)).isNull());
