@@ -1,12 +1,22 @@
 server:
   port: ${SERVER_PORT:8082}
 
+appointment:
+  cors:
+    allowed-origins: ${APPOINTMENT_CORS_ALLOWED_ORIGINS:}
+  security:
+    final-user-jwt:
+      base64-secret: ${APPOINTMENT_USER_JWT_SECRET:}
+      ttl: ${APPOINTMENT_USER_JWT_TTL:1h}
+      remember-me-ttl: ${APPOINTMENT_USER_JWT_REMEMBER_ME_TTL:7d}
+
 spring:
   datasource:
     url: ${APPOINTMENT_DB_URL}
     username: ${APPOINTMENT_DB_USERNAME}
     password: ${APPOINTMENT_DB_PASSWORD}
   jpa:
+    open-in-view: false
     hibernate:
       ddl-auto: none
   flyway:
