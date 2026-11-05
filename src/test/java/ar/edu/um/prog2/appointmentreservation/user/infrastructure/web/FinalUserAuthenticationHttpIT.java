@@ -142,7 +142,8 @@ class FinalUserAuthenticationHttpIT {
 		assertThat(health.statusCode()).isEqualTo(200);
 		var closed = client.send(HttpRequest.newBuilder(URI.create(baseUrl + "/api/private"))
 				.header("Authorization", "Bearer " + token).GET().build(), HttpResponse.BodyHandlers.ofString());
-		assertThat(closed.statusCode()).isEqualTo(401);
+		// The valid Bearer token reaches MVC; this nonexistent endpoint returns 404.
+		assertThat(closed.statusCode()).isEqualTo(404);
 	}
 
 	@Test

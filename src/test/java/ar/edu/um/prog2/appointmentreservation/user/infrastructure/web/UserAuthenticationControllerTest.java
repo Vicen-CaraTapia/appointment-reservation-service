@@ -27,7 +27,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -50,7 +50,7 @@ class UserAuthenticationControllerTest {
 
 	@Autowired private MockMvc mvc;
 	@MockitoBean private AuthenticateUserUseCase useCase;
-	@MockitoBean private AuthenticationManager manager;
+	@MockitoBean private JwtDecoder jwtDecoder;
 
 	@ParameterizedTest
 	@ValueSource(booleans = {false, true})
