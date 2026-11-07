@@ -66,6 +66,8 @@ El perfil Spring `test`, definido exclusivamente en recursos de test, desactiva
 el datasource para el test de bootstrap/HTTP. No se empaqueta en el JAR.
 El perfil Maven `postgres-integration` selecciona las pruebas con PostgreSQL real;
 no activa el perfil Spring `test` y exige las variables `APPOINTMENT_TEST_DB_*`.
+Sus arranques de aplicación reciben valores ficticios de cátedra desde configuración
+exclusiva de pruebas; no requieren credenciales reales de cátedra ni conectividad REST o Kafka.
 
 Para consumir la API desde un cliente web, configurá
 `APPOINTMENT_CORS_ALLOWED_ORIGINS` con el origen exacto de ese cliente, por

@@ -13,6 +13,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 
+import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupport;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class CatedraIntegrationPropertiesTest {
@@ -53,6 +55,14 @@ class CatedraIntegrationPropertiesTest {
 		contextRunner.withPropertyValues(propertiesWithout(propertyName)).run(context -> {
 			assertThat(context).hasFailed();
 			assertThat(exceptionMessages(context.getStartupFailure())).doesNotContain(TEST_JWT);
+		});
+	}
+
+	@Test
+	void acceptsDummySettingsUsedByPostgresIntegrationTests() {
+		contextRunner.withInitializer(CatedraIntegrationTestSupport::configure).run(context -> {
+			assertThat(context).hasNotFailed();
+			assertThat(context).hasSingleBean(CatedraIntegrationProperties.class);
 		});
 	}
 
