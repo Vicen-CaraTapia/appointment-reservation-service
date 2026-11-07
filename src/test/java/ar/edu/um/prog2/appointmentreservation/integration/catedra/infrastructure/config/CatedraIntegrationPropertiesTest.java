@@ -11,6 +11,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.StandardEnvironment;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 
 import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupport;
@@ -31,6 +32,12 @@ class CatedraIntegrationPropertiesTest {
 			"catedra.kafka.appointment-phone-topic=test.appointment.phone");
 
 	private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+			.withInitializer(context -> {
+				// Missing-property cases must not fall back to the developer's environment or JVM settings.
+				var sources = context.getEnvironment().getPropertySources();
+				sources.remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
+				sources.remove(StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME);
+			})
 			.withUserConfiguration(TestConfiguration.class);
 
 	@Test
