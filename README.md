@@ -56,6 +56,10 @@ calcules a partir de `groupId`. Los dos timeouts son obligatorios, positivos y
 aceptan formatos como `5s` y `30s`. La URL REST debe ser HTTP(S) absoluta, sin
 credenciales embebidas, query ni fragmento; admite un prefijo de ruta.
 
+La configuración Kafka prepara las factories y el template, sin registrar listeners,
+consumir, publicar ni crear topics. El arranque y el health check no verifican la
+conectividad con el broker.
+
 Para clientes web, `APPOINTMENT_CORS_ALLOWED_ORIGINS` admite orígenes exactos separados
 por coma. Vacío no habilita otros orígenes; no se permite `*` ni autenticación por
 cookies. Los clientes móviles nativos no necesitan CORS.
