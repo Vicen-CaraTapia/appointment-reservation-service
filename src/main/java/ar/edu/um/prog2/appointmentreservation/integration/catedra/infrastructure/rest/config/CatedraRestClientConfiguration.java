@@ -7,14 +7,20 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
+import tools.jackson.databind.ObjectMapper;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraRestClient;
 
 @Configuration(proxyBeanMethods = false)
 public class CatedraRestClientConfiguration {
 
 	@Bean
-	public RestClient catedraHttpClient(CatedraIntegrationProperties properties) {
+	public CatedraRestClient catedraRestClient(CatedraIntegrationProperties properties, ObjectMapper json) {
+		return new CatedraRestClient(catedraHttpClient(properties), json);
+	}
+
+	RestClient catedraHttpClient(CatedraIntegrationProperties properties) {
 		var rest = properties.rest();
 		URI baseUri = validatedBaseUri(rest.baseUrl());
 		HttpClient httpClient = HttpClient.newBuilder()
