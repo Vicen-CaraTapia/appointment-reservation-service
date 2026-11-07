@@ -16,6 +16,8 @@ public final class CatedraIntegrationTestSupport {
 				"catedra.group-id", "test-project",
 				"catedra.technical-jwt", "not-a-real-catedra-token",
 				"catedra.rest.base-url", "https://catedra.example.test",
+				"catedra.rest.connect-timeout", "5s",
+				"catedra.rest.read-timeout", "30s",
 				"catedra.kafka.bootstrap-servers", "kafka.example.test:9092",
 				"catedra.kafka.consumer-group-id", "test-project-consumer",
 				"catedra.kafka.appointment-actions-topic", "test.appointment.actions",

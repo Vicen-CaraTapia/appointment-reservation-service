@@ -1,14 +1,20 @@
 package ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.StandardEnvironment;
@@ -18,6 +24,7 @@ import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupp
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(OutputCaptureExtension.class)
 class CatedraIntegrationPropertiesTest {
 
 	private static final String TEST_JWT = "test-only-catedra-jwt-value";
@@ -26,6 +33,8 @@ class CatedraIntegrationPropertiesTest {
 			"catedra.group-id=test-project",
 			"catedra.technical-jwt=" + TEST_JWT,
 			"catedra.rest.base-url=https://catedra.example.test",
+			"catedra.rest.connect-timeout=5s",
+			"catedra.rest.read-timeout=30s",
 			"catedra.kafka.bootstrap-servers=kafka.example.test:9092",
 			"catedra.kafka.consumer-group-id=test-project-consumer",
 			"catedra.kafka.appointment-actions-topic=test.appointment.actions",
@@ -48,6 +57,8 @@ class CatedraIntegrationPropertiesTest {
 			assertThat(properties.groupId()).isEqualTo("test-project");
 			assertThat(properties.technicalJwt()).isEqualTo(TEST_JWT);
 			assertThat(properties.rest().baseUrl()).isEqualTo("https://catedra.example.test");
+			assertThat(properties.rest().connectTimeout()).isEqualTo(Duration.ofSeconds(5));
+			assertThat(properties.rest().readTimeout()).isEqualTo(Duration.ofSeconds(30));
 			assertThat(properties.kafka().bootstrapServers()).isEqualTo("kafka.example.test:9092");
 			assertThat(properties.kafka().consumerGroupId()).isEqualTo("test-project-consumer");
 			assertThat(properties.kafka().appointmentActionsTopic()).isEqualTo("test.appointment.actions");
@@ -80,6 +91,31 @@ class CatedraIntegrationPropertiesTest {
 			assertThat(context).hasFailed();
 			assertThat(exceptionMessages(context.getStartupFailure())).doesNotContain(TEST_JWT);
 		});
+	}
+
+	@ParameterizedTest
+	@CsvSource({
+			"catedra.rest.connect-timeout, 0s",
+			"catedra.rest.connect-timeout, -1s",
+			"catedra.rest.connect-timeout, invalid-duration",
+			"catedra.rest.connect-timeout, ' '",
+			"catedra.rest.read-timeout, 0s",
+			"catedra.rest.read-timeout, -1s",
+			"catedra.rest.read-timeout, invalid-duration",
+			"catedra.rest.read-timeout, ' '"
+	})
+	void rejectsInvalidTimeoutsWithoutExposingSecrets(String propertyName, String value) {
+		var properties = Stream.concat(Arrays.stream(propertiesWithout(propertyName)),
+				Stream.of(propertyName + "=" + value)).toArray(String[]::new);
+		contextRunner.withPropertyValues(properties).run(context -> {
+			assertThat(context).hasFailed();
+			assertThat(exceptionMessages(context.getStartupFailure())).doesNotContain(TEST_JWT);
+		});
+	}
+
+	@AfterEach
+	void neverLogsTheTechnicalJwt(CapturedOutput output) {
+		assertThat(output.getAll()).doesNotContain(TEST_JWT, "not-a-real-catedra-token");
 	}
 
 	static Stream<String> requiredPropertyNames() {

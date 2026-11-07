@@ -49,6 +49,8 @@ aplicación por sí solo. No ejecutes la plantilla como script: contiene placeho
 | `CATEDRA_GROUP_ID` | Sí | Identificador técnico de la integración asignado por la cátedra; no es un usuario final. |
 | `CATEDRA_TECHNICAL_JWT` | Sí | JWT técnico compartido con Catalog. Es secreto y permanece exclusivamente en los backends. |
 | `CATEDRA_REST_BASE_URL` | Sí | URL base de la API REST de la cátedra. |
+| `CATEDRA_REST_CONNECT_TIMEOUT` | Sí | Duración máxima para establecer la conexión REST; por ejemplo `5s`. |
+| `CATEDRA_REST_READ_TIMEOUT` | Sí | Duración máxima de espera de respuesta REST; por ejemplo `30s`. |
 | `CATEDRA_KAFKA_BOOTSTRAP_SERVERS` | Sí | Brokers Kafka provistos por la cátedra. |
 | `CATEDRA_KAFKA_CONSUMER_GROUP_ID` | Sí | Consumer group provisto para la integración técnica. |
 | `CATEDRA_KAFKA_APPOINTMENT_ACTIONS_TOPIC` | Sí | Topic asignado para eventos de acciones de turnos que envía la cátedra a Appointment. |
@@ -89,8 +91,17 @@ mismo `groupId` y JWT técnico para acceder a la cátedra; ambos valores permane
 solo en los backends y nunca se devuelven a KMP. `groupId` identifica la integración
 técnica, no al usuario final autenticado en Appointment.
 
-Las siete variables `CATEDRA_*` son obligatorias y se validan al iniciar. Los dos
-topics se cargan con los nombres exactos provistos en la respuesta de integración
+Todas las variables `CATEDRA_*` de esta tabla son obligatorias y se validan al iniciar.
+Los dos timeouts aceptan duraciones de Spring Boot como `5s` y `30s`; deben estar
+presentes y ser estrictamente positivos. No se aceptan valores vacíos, cero o negativos,
+y no tienen un valor predeterminado en la aplicación. El bean `catedraHttpClient`
+aplica ambos timeouts mediante el cliente HTTP del JDK y Spring `RestClient`.
+Adjunta el JWT técnico como Bearer automáticamente, restringe las peticiones al
+origen REST configurado y no sigue redirecciones. La URL base debe ser HTTP(S)
+absoluta, sin credenciales, query ni fragmento; puede incluir un prefijo de ruta.
+Su creación no realiza llamadas de red. Todavía no hay adaptadores de endpoints
+ni traducción propia de errores de cátedra en este incremento.
+Los dos topics se cargan con los nombres exactos provistos en la respuesta de integración
 de la cátedra; no se construyen a partir de `CATEDRA_GROUP_ID`. El topic de acciones
 recibe eventos desde la cátedra y el topic de teléfono se usa para publicar
 `AdditionalInformationSubmitted`. A3.1 solo configura estos valores: no realiza

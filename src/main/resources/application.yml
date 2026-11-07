@@ -6,6 +6,8 @@ catedra:
   technical-jwt: ${CATEDRA_TECHNICAL_JWT:}
   rest:
     base-url: ${CATEDRA_REST_BASE_URL:}
+    connect-timeout: ${CATEDRA_REST_CONNECT_TIMEOUT:}
+    read-timeout: ${CATEDRA_REST_READ_TIMEOUT:}
   kafka:
     bootstrap-servers: ${CATEDRA_KAFKA_BOOTSTRAP_SERVERS:}
     consumer-group-id: ${CATEDRA_KAFKA_CONSUMER_GROUP_ID:}
