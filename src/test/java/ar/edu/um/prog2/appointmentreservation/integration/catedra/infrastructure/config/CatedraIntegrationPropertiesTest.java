@@ -36,13 +36,13 @@ class CatedraIntegrationPropertiesTest {
 		contextRunner.withPropertyValues(VALID_PROPERTIES.toArray(String[]::new)).run(context -> {
 			assertThat(context).hasNotFailed();
 			var properties = context.getBean(CatedraIntegrationProperties.class);
-			assertThat(properties.getGroupId()).isEqualTo("test-project");
-			assertThat(properties.getTechnicalJwt()).isEqualTo(TEST_JWT);
-			assertThat(properties.getRest().getBaseUrl()).isEqualTo("https://catedra.example.test");
-			assertThat(properties.getKafka().getBootstrapServers()).isEqualTo("kafka.example.test:9092");
-			assertThat(properties.getKafka().getConsumerGroupId()).isEqualTo("test-project-consumer");
-			assertThat(properties.getKafka().getAppointmentActionsTopic()).isEqualTo("test.appointment.actions");
-			assertThat(properties.getKafka().getAppointmentPhoneTopic()).isEqualTo("test.appointment.phone");
+			assertThat(properties.groupId()).isEqualTo("test-project");
+			assertThat(properties.technicalJwt()).isEqualTo(TEST_JWT);
+			assertThat(properties.rest().baseUrl()).isEqualTo("https://catedra.example.test");
+			assertThat(properties.kafka().bootstrapServers()).isEqualTo("kafka.example.test:9092");
+			assertThat(properties.kafka().consumerGroupId()).isEqualTo("test-project-consumer");
+			assertThat(properties.kafka().appointmentActionsTopic()).isEqualTo("test.appointment.actions");
+			assertThat(properties.kafka().appointmentPhoneTopic()).isEqualTo("test.appointment.phone");
 			assertThat(properties.toString()).doesNotContain(TEST_JWT);
 		});
 	}
