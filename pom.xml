@@ -163,6 +163,36 @@
 				</plugins>
 			</build>
 		</profile>
+		<profile>
+			<id>kafka-integration</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>default</id>
+								<phase>none</phase>
+							</execution>
+							<execution>
+								<id>kafka-it</id>
+								<configuration>
+									<includes>
+										<include>**/CatedraKafkaConnectivityIT.java</include>
+									</includes>
+									<summaryFile>${project.build.directory}/failsafe-reports/kafka-summary.xml</summaryFile>
+								</configuration>
+								<goals>
+									<goal>integration-test</goal>
+									<goal>verify</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
 	</profiles>
 
 </project>

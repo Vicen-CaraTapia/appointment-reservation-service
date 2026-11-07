@@ -237,6 +237,12 @@ variables o no puede conectar. Cada test crea y elimina exclusivamente su esquem
 Las pruebas reciben datos ficticios de cátedra. Los tests HTTP del cliente REST
 utilizan servidores locales, sin credenciales ni conexiones reales externas.
 
+Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
+`CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,
+`CATEDRA_KAFKA_APPOINTMENT_ACTIONS_TOPIC` y
+`CATEDRA_KAFKA_APPOINTMENT_PHONE_TOPIC`, y ejecutá
+`./mvnw -Pkafka-integration verify`. Esta prueba consulta metadata; no consume ni publica mensajes.
+
 El reporte de cobertura HTML está en `target/site/jacoco/index.html`.
 
 ## CI y SonarQube Cloud
