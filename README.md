@@ -56,6 +56,10 @@ calcules a partir de `groupId`. Los dos timeouts son obligatorios, positivos y
 aceptan formatos como `5s` y `30s`. La URL REST debe ser HTTP(S) absoluta, sin
 credenciales embebidas, query ni fragmento; admite un prefijo de ruta.
 
+La configuración Kafka prepara las factories y el template, sin registrar listeners,
+consumir, publicar ni crear topics. El arranque y el health check no verifican la
+conectividad con el broker.
+
 Para clientes web, `APPOINTMENT_CORS_ALLOWED_ORIGINS` admite orígenes exactos separados
 por coma. Vacío no habilita otros orígenes; no se permite `*` ni autenticación por
 cookies. Los clientes móviles nativos no necesitan CORS.
@@ -232,6 +236,12 @@ variables o no puede conectar. Cada test crea y elimina exclusivamente su esquem
 `appointment_it_<uuid>`; no apuntes estas pruebas a Catalog ni a producción.
 Las pruebas reciben datos ficticios de cátedra. Los tests HTTP del cliente REST
 utilizan servidores locales, sin credenciales ni conexiones reales externas.
+
+Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
+`CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,
+`CATEDRA_KAFKA_APPOINTMENT_ACTIONS_TOPIC` y
+`CATEDRA_KAFKA_APPOINTMENT_PHONE_TOPIC`, y ejecutá
+`./mvnw -Pkafka-integration verify`. Esta prueba consulta metadata; no consume ni publica mensajes.
 
 El reporte de cobertura HTML está en `target/site/jacoco/index.html`.
 
