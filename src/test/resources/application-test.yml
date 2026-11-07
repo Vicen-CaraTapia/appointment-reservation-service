@@ -2,3 +2,14 @@
 spring:
   autoconfigure:
     exclude: org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+
+catedra:
+  group-id: test-project
+  technical-jwt: not-a-real-catedra-token
+  rest:
+    base-url: https://catedra.example.test
+  kafka:
+    bootstrap-servers: kafka.example.test:9092
+    consumer-group-id: test-project-consumer
+    appointment-actions-topic: test.appointment.actions
+    appointment-phone-topic: test.appointment.phone

@@ -46,6 +46,13 @@ aplicación por sí solo. No ejecutes la plantilla como script: contiene placeho
 | `APPOINTMENT_USER_JWT_SECRET` | Sí | Clave exclusiva para usuarios finales, Base64 de al menos 64 bytes aleatorios. |
 | `APPOINTMENT_USER_JWT_TTL` | No | `1h`; duración normal, positiva y en segundos enteros. |
 | `APPOINTMENT_USER_JWT_REMEMBER_ME_TTL` | No | `7d`; duración larga, positiva y no menor que la normal. |
+| `CATEDRA_GROUP_ID` | Sí | Identificador técnico de la integración asignado por la cátedra; no es un usuario final. |
+| `CATEDRA_TECHNICAL_JWT` | Sí | JWT técnico compartido con Catalog. Es secreto y permanece exclusivamente en los backends. |
+| `CATEDRA_REST_BASE_URL` | Sí | URL base de la API REST de la cátedra. |
+| `CATEDRA_KAFKA_BOOTSTRAP_SERVERS` | Sí | Brokers Kafka provistos por la cátedra. |
+| `CATEDRA_KAFKA_CONSUMER_GROUP_ID` | Sí | Consumer group provisto para la integración técnica. |
+| `CATEDRA_KAFKA_APPOINTMENT_ACTIONS_TOPIC` | Sí | Topic asignado para eventos de acciones de turnos que envía la cátedra a Appointment. |
+| `CATEDRA_KAFKA_APPOINTMENT_PHONE_TOPIC` | Sí | Topic asignado para que Appointment publique `AdditionalInformationSubmitted`. |
 | `APPOINTMENT_TEST_DB_URL` | Solo integración | URL de una base descartable de Appointment. |
 | `APPOINTMENT_TEST_DB_USERNAME` | Solo integración | Usuario con permiso de crear esquemas de prueba. |
 | `APPOINTMENT_TEST_DB_PASSWORD` | Solo integración | Contraseña externa para las pruebas PostgreSQL. |
@@ -59,6 +66,8 @@ El perfil Spring `test`, definido exclusivamente en recursos de test, desactiva
 el datasource para el test de bootstrap/HTTP. No se empaqueta en el JAR.
 El perfil Maven `postgres-integration` selecciona las pruebas con PostgreSQL real;
 no activa el perfil Spring `test` y exige las variables `APPOINTMENT_TEST_DB_*`.
+Sus arranques de aplicación reciben valores ficticios de cátedra desde configuración
+exclusiva de pruebas; no requieren credenciales reales de cátedra ni conectividad REST o Kafka.
 
 Para consumir la API desde un cliente web, configurá
 `APPOINTMENT_CORS_ALLOWED_ORIGINS` con el origen exacto de ese cliente, por
@@ -74,9 +83,18 @@ argumentos de comandos ni a logs. Si guardás secretos en un archivo local,
 restringí sus permisos al propietario (`chmod 600 .env`). Los permisos y el
 archivo ignorado no reemplazan una gestión de secretos para producción.
 
-La clave de usuarios finales se configura en A2.3. La identidad interna de Catalog,
-las credenciales técnicas de cátedra y Kafka se configurarán en sus propias Issues.
-Esas identidades y sus credenciales permanecen separadas.
+La clave de usuarios finales se configura en A2.3. La identidad interna de Catalog
+es independiente de la cuenta técnica de cátedra. Appointment y Catalog usan el
+mismo `groupId` y JWT técnico para acceder a la cátedra; ambos valores permanecen
+solo en los backends y nunca se devuelven a KMP. `groupId` identifica la integración
+técnica, no al usuario final autenticado en Appointment.
+
+Las siete variables `CATEDRA_*` son obligatorias y se validan al iniciar. Los dos
+topics se cargan con los nombres exactos provistos en la respuesta de integración
+de la cátedra; no se construyen a partir de `CATEDRA_GROUP_ID`. El topic de acciones
+recibe eventos desde la cátedra y el topic de teléfono se usa para publicar
+`AdditionalInformationSubmitted`. A3.1 solo configura estos valores: no realiza
+llamadas REST ni conexiones o publicaciones Kafka.
 
 ## Ejecutar el servicio
 

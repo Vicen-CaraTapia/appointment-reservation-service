@@ -1,6 +1,17 @@
 server:
   port: ${SERVER_PORT:8082}
 
+catedra:
+  group-id: ${CATEDRA_GROUP_ID:}
+  technical-jwt: ${CATEDRA_TECHNICAL_JWT:}
+  rest:
+    base-url: ${CATEDRA_REST_BASE_URL:}
+  kafka:
+    bootstrap-servers: ${CATEDRA_KAFKA_BOOTSTRAP_SERVERS:}
+    consumer-group-id: ${CATEDRA_KAFKA_CONSUMER_GROUP_ID:}
+    appointment-actions-topic: ${CATEDRA_KAFKA_APPOINTMENT_ACTIONS_TOPIC:}
+    appointment-phone-topic: ${CATEDRA_KAFKA_APPOINTMENT_PHONE_TOPIC:}
+
 appointment:
   cors:
     allowed-origins: ${APPOINTMENT_CORS_ALLOWED_ORIGINS:}
