@@ -27,6 +27,7 @@ import org.springframework.core.env.MapPropertySource;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
+import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.application.exception.DuplicateUserException;
 import ar.edu.um.prog2.appointmentreservation.user.application.exception.DuplicateUserException.Field;
@@ -77,6 +78,7 @@ class UserRegistrationIT {
 				"spring.jpa.properties.hibernate.default_schema", schema,
 				"spring.jpa.hibernate.ddl-auto", "validate");
 		context = new SpringApplicationBuilder(AppointmentReservationApplication.class)
+				.initializers(CatedraIntegrationTestSupport::configure)
 				.web(WebApplicationType.NONE)
 				.initializers(application -> application.getEnvironment().getPropertySources().addFirst(
 						new MapPropertySource("userRegistrationTest", properties)))

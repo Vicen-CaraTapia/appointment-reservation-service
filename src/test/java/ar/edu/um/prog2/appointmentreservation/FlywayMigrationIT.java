@@ -1,5 +1,6 @@
 package ar.edu.um.prog2.appointmentreservation;
 
+import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -185,6 +186,7 @@ class FlywayMigrationIT {
 		properties.put("spring.jpa.properties.hibernate.default_schema", schema);
 		// A high-priority source overrides application.yml without putting secrets in arguments.
 		return new SpringApplicationBuilder(AppointmentReservationApplication.class)
+				.initializers(CatedraIntegrationTestSupport::configure)
 				.web(WebApplicationType.NONE)
 				.initializers(context -> context.getEnvironment().getPropertySources().addFirst(
 						new MapPropertySource("integrationDatabase", properties)))
