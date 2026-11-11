@@ -41,7 +41,8 @@ class CatalogIntegrationPropertiesTest {
 			"catalog.integration.read-timeout=30s",
 			"catalog.integration.private-key-location=" + PRIVATE_LOCATION,
 			"catalog.integration.issuer=appointment-reservation-service",
-			"catalog.integration.audience=catalog-sync-service");
+			"catalog.integration.audience=catalog-sync-service",
+			"catalog.integration.token-ttl=5m");
 
 	private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
 			.withInitializer(context -> {
@@ -60,7 +61,8 @@ class CatalogIntegrationPropertiesTest {
 						"CATALOG_READ_TIMEOUT", "30s",
 						"INTERNAL_CATALOG_JWT_PRIVATE_KEY_LOCATION", PRIVATE_LOCATION,
 						"INTERNAL_CATALOG_JWT_ISSUER", "appointment-reservation-service",
-						"INTERNAL_CATALOG_JWT_AUDIENCE", "catalog-sync-service"))))
+						"INTERNAL_CATALOG_JWT_AUDIENCE", "catalog-sync-service",
+						"INTERNAL_CATALOG_JWT_TTL", "90s"))))
 				.withInitializer(new ConfigDataApplicationContextInitializer())
 				.run(context -> {
 					assertThat(context).hasNotFailed();
@@ -71,8 +73,25 @@ class CatalogIntegrationPropertiesTest {
 					assertThat(properties.privateKeyLocation()).isEqualTo(PRIVATE_LOCATION);
 					assertThat(properties.issuer()).isEqualTo("appointment-reservation-service");
 					assertThat(properties.audience()).isEqualTo("catalog-sync-service");
+					assertThat(properties.tokenTtl()).isEqualTo(Duration.ofSeconds(90));
 					assertThat(properties.toString()).isEqualTo("CatalogIntegrationProperties[redacted]");
 				});
+	}
+
+	@Test
+	void defaultsTheTokenLifetimeToFiveMinutesThroughApplicationYaml() {
+		contextRunner.withInitializer(new ConfigDataApplicationContextInitializer())
+				.withPropertyValues(without("catalog.integration.token-ttl"))
+				.run(context -> {
+					assertThat(context).hasNotFailed();
+					assertThat(context.getBean(CatalogIntegrationProperties.class).tokenTtl()).isEqualTo(Duration.ofMinutes(5));
+				});
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"0s", "-1s", "500ms", "invalid-duration"})
+	void rejectsInvalidTokenLifetimes(String value) {
+		assertRejected("catalog.integration.token-ttl", value);
 	}
 
 	@ParameterizedTest

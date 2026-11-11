@@ -9,6 +9,7 @@ catalog:
     private-key-location: ${INTERNAL_CATALOG_JWT_PRIVATE_KEY_LOCATION:}
     issuer: ${INTERNAL_CATALOG_JWT_ISSUER:}
     audience: ${INTERNAL_CATALOG_JWT_AUDIENCE:}
+    token-ttl: ${INTERNAL_CATALOG_JWT_TTL:5m}
 
 catedra:
   group-id: ${CATEDRA_GROUP_ID:}

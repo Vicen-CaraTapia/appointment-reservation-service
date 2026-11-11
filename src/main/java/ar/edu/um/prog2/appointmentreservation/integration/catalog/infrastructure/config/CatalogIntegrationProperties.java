@@ -20,7 +20,8 @@ public record CatalogIntegrationProperties(
 		@NotNull @DurationMin(seconds = 0, inclusive = false) Duration readTimeout,
 		@NotBlank String privateKeyLocation,
 		@NotBlank String issuer,
-		@NotBlank String audience
+		@NotBlank String audience,
+		@NotNull Duration tokenTtl
 ) {
 
 	@AssertTrue(message = "Catalog base URL must be an absolute HTTP(S) URL without credentials, query or fragment")
@@ -39,7 +40,7 @@ public record CatalogIntegrationProperties(
 		}
 	}
 
-	/** Checks the location only. A4.2 will load and validate the signing key. */
+	/** Checks the location syntax; the token issuer loads and validates the key. */
 	@AssertTrue(message = "Catalog private key location must be an absolute external file URI")
 	public boolean isPrivateKeyLocationValid() {
 		if (privateKeyLocation == null || privateKeyLocation.isBlank()) {
@@ -51,6 +52,11 @@ public record CatalogIntegrationProperties(
 		} catch (IllegalArgumentException exception) {
 			return false;
 		}
+	}
+
+	@AssertTrue(message = "Catalog internal JWT TTL must be a positive whole number of seconds")
+	public boolean isTokenTtlValid() {
+		return tokenTtl == null || (!tokenTtl.isNegative() && !tokenTtl.isZero() && tokenTtl.getNano() == 0);
 	}
 
 	@Override

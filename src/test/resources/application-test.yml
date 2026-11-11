@@ -8,9 +8,11 @@ catalog:
     base-url: https://catalog.example.test
     connect-timeout: 5s
     read-timeout: 30s
+    # Configuration-only fixture; full application tests override this with an ephemeral key.
     private-key-location: file:/not-present/appointment-test-private.pem
     issuer: appointment-reservation-service
     audience: catalog-sync-service
+    token-ttl: 5m
 
 catedra:
   group-id: test-project
