@@ -37,6 +37,7 @@ cargarlo desde Bash, escribí sus valores entre comillas y protegelo con `chmod 
 | `INTERNAL_CATALOG_JWT_PRIVATE_KEY_LOCATION` | Sí | URI `file:/ruta/absoluta/private.pem` de la clave privada RSA externa de Appointment. |
 | `INTERNAL_CATALOG_JWT_ISSUER` | Sí | `appointment-reservation-service`, según el contrato interno con Catalog. |
 | `INTERNAL_CATALOG_JWT_AUDIENCE` | Sí | `catalog-sync-service`, según el contrato interno con Catalog. |
+| `INTERNAL_CATALOG_JWT_TTL` | No | `5m`; duración del JWT interno, positiva y en segundos enteros. |
 | `CATEDRA_GROUP_ID` | Sí | Identificador técnico de la integración asignado por la cátedra; no es un usuario final. |
 | `CATEDRA_TECHNICAL_JWT` | Sí | JWT técnico compartido con Catalog. Es secreto y permanece exclusivamente en los backends. |
 | `CATEDRA_REST_BASE_URL` | Sí | URL base de la API REST de la cátedra. |
@@ -60,9 +61,16 @@ La clave privada RSA de Appointment debe corresponder a la clave pública config
 en Catalog mediante `INTERNAL_CATALOG_JWT_PUBLIC_KEY_LOCATION`; la clave privada
 permanece en Appointment. La autenticación interna usa RS256, separada del JWT HS512
 de usuarios finales y del JWT técnico de cátedra. No se configura un token interno estático.
-En A4.1 solo se validan las propiedades y la URI de archivo: todavía no se lee el
-PEM, se firma un JWT ni se realizan llamadas HTTP. La carga y validación criptográfica
-de la clave RSA (al menos 2048 bits) corresponderán a A4.2.
+Al iniciar se carga una vez la clave privada RSA externa: PEM PKCS#8 sin cifrar,
+con encabezado `BEGIN PRIVATE KEY` y al menos 2048 bits. El archivo debe existir
+y ser legible por el usuario del proceso; mantenelo fuera del repositorio y restringí
+sus permisos. Se rechazan claves ausentes, inválidas o de tamaño insuficiente con
+un error redactado. El emisor interno genera JWT RS256 con la identidad de Appointment,
+audiencia de Catalog, permiso `catalog:read` y expiración configurable.
+El cliente interno consulta `GET /internal/api/professionals/{id}` con el JWT
+automático y los timeouts configurados. Recibe profesional, categoría y horarios
+semanales; conserva sus estados habilitados/deshabilitados. Los errores conservan
+el status HTTP y una respuesta incompatible se rechaza como error de contrato.
 
 Appointment y Catalog usan la misma cuenta técnica y JWT de cátedra, exclusivamente
 en los backends. `groupId` identifica esa integración, no al usuario final.
@@ -202,14 +210,17 @@ y el puerto `5432`, en vez del puerto publicado en el host:
 
 ```bash
 APPOINTMENT_DB_URL='jdbc:postgresql://appointment-postgres:5432/appointment_db' \
+INTERNAL_CATALOG_JWT_PRIVATE_KEY_LOCATION='file:/run/secrets/catalog-private.pem' \
 docker run -d --name appointment-service-local \
   --network project-infrastructure_appointment-db-network \
+  --mount type=bind,source=/absolute/path/appointment-private.pem,target=/run/secrets/catalog-private.pem,readonly \
   -p 127.0.0.1:8082:8082 \
   -e APPOINTMENT_DB_URL -e APPOINTMENT_DB_USERNAME -e APPOINTMENT_DB_PASSWORD \
   -e APPOINTMENT_USER_JWT_SECRET \
   -e CATALOG_BASE_URL -e CATALOG_CONNECT_TIMEOUT -e CATALOG_READ_TIMEOUT \
   -e INTERNAL_CATALOG_JWT_PRIVATE_KEY_LOCATION \
   -e INTERNAL_CATALOG_JWT_ISSUER -e INTERNAL_CATALOG_JWT_AUDIENCE \
+  -e INTERNAL_CATALOG_JWT_TTL \
   -e CATEDRA_GROUP_ID -e CATEDRA_TECHNICAL_JWT -e CATEDRA_REST_BASE_URL \
   -e CATEDRA_REST_CONNECT_TIMEOUT -e CATEDRA_REST_READ_TIMEOUT \
   -e CATEDRA_KAFKA_BOOTSTRAP_SERVERS -e CATEDRA_KAFKA_CONSUMER_GROUP_ID \
@@ -221,8 +232,9 @@ Para PostgreSQL instalado en el host, usá `host.docker.internal:<puerto>` en la
 URL JDBC; en Linux agregá `--add-host=host.docker.internal:host-gateway` y verificá
 que PostgreSQL permita conexiones desde Docker. El Compose compartido se administra
 fuera de este repositorio; esta imagen no incluye las bases ni la infraestructura de cátedra.
-La URI de clave privada debe referirse a una ruta dentro del contenedor; cuando A4.2
-incorpore su lectura, el PEM externo deberá montarse allí con acceso de solo lectura.
+Reemplazá `/absolute/path/appointment-private.pem` por el archivo externo real.
+La URI de clave privada apunta a su montaje dentro del contenedor. El usuario
+`appuser` (UID 10001) necesita permiso de lectura sobre ese archivo.
 
 El health check usa `/actuator/health`. Si configurás otro `SERVER_PORT`, pasalo
 con `-e SERVER_PORT` y ajustá el puerto de destino de `-p`.
@@ -254,8 +266,31 @@ export APPOINTMENT_TEST_DB_PASSWORD
 Reemplazá host, puerto y usuario antes de ejecutar. El perfil falla si faltan
 variables o no puede conectar. Cada test crea y elimina exclusivamente su esquema
 `appointment_it_<uuid>`; no apuntes estas pruebas a Catalog ni a producción.
-Las pruebas reciben datos ficticios de cátedra. Los tests HTTP del cliente REST
-utilizan servidores locales, sin credenciales ni conexiones reales externas.
+Las pruebas reciben datos ficticios de cátedra. Los tests HTTP de cátedra y Catalog
+utilizan servidores locales y credenciales ficticias o claves efímeras, sin conexiones
+reales a esos servicios.
+
+Para probar el cliente de Appointment contra un Catalog en ejecución, configurá
+las variables `CATALOG_*` e `INTERNAL_CATALOG_JWT_*` de la tabla anterior. Catalog
+debe usar la clave pública correspondiente. Indicá un profesional existente y un
+ID confirmado como inexistente en esa instancia:
+
+```bash
+export APPOINTMENT_TEST_CATALOG_PROFESSIONAL_ID='<existing-professional-id>'
+export APPOINTMENT_TEST_CATALOG_MISSING_PROFESSIONAL_ID='<confirmed-missing-professional-id>'
+./mvnw -Pcatalog-integration verify
+```
+
+Reemplazá ambos placeholders antes de ejecutar. Este perfil realiza únicamente
+consultas HTTP autenticadas: comprueba la respuesta del profesional y el `404` del
+ID inexistente, sin crear ni modificar datos. Ejecuta la configuración, firma y
+cliente reales de Appointment en un contexto sin servidor HTTP, PostgreSQL ni Kafka.
+No requiere arrancar el servidor completo de Appointment ni cargar sus credenciales
+de base, JWT de usuarios finales o cátedra. La salida muestra solo IDs, estado y
+cantidad de horarios; nunca el JWT interno ni la clave privada.
+
+Los perfiles `postgres-integration`, `kafka-integration` y `catalog-integration`
+seleccionan sus propias pruebas y guardan resúmenes Failsafe separados.
 
 Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
 `CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,
@@ -268,8 +303,8 @@ El reporte de cobertura HTML está en `target/site/jacoco/index.html`.
 ## CI y SonarQube Cloud
 
 GitHub Actions ejecuta build y tests normales en PR hacia `develop`, `main` y
-`milestone/**`, y en push a `develop`/`main`. El perfil PostgreSQL es explícito y
-no se ejecuta en ese workflow. El análisis Sonar espera el Quality Gate.
+`milestone/**`, y en push a `develop`/`main`. Los perfiles de integración externa
+son explícitos y no se ejecutan en ese workflow. El análisis Sonar espera el Quality Gate.
 
 Configuración requerida en Settings → Secrets and variables → Actions:
 

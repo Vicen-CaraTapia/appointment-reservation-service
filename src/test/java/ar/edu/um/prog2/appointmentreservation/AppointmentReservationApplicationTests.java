@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -13,6 +14,7 @@ import org.springframework.test.web.servlet.client.RestTestClient;
 import ar.edu.um.prog2.appointmentreservation.user.application.port.out.UserRegistrationStore;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.repository.UserJpaRepository;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
+import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupport;
 
 @SpringBootTest(
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -20,6 +22,7 @@ import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 )
 @AutoConfigureRestTestClient
 @ActiveProfiles("test")
+@ContextConfiguration(initializers = CatalogIntegrationTestSupport.class)
 class AppointmentReservationApplicationTests {
 
 	@MockitoBean
