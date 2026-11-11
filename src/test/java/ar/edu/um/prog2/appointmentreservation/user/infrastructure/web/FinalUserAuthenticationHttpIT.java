@@ -39,6 +39,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
 import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupport;
+import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.UserEntity;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.repository.UserJpaRepository;
@@ -85,7 +86,7 @@ class FinalUserAuthenticationHttpIT {
 		properties.put("spring.jpa.hibernate.ddl-auto", "validate");
 		properties.put("server.port", 0);
 		context = new SpringApplicationBuilder(AppointmentReservationApplication.class)
-				.initializers(CatedraIntegrationTestSupport::configure)
+				.initializers(CatedraIntegrationTestSupport::configure, CatalogIntegrationTestSupport::configure)
 				.web(WebApplicationType.SERVLET)
 				.initializers(application -> application.getEnvironment().getPropertySources().addFirst(
 						new MapPropertySource("finalUserAuthenticationTest", properties))).run();
