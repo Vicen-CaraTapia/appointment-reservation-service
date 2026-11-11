@@ -10,6 +10,7 @@ public final class CatalogClientException extends RuntimeException {
 	public enum Reason {
 		HTTP,
 		INVALID_RESPONSE,
+		TIMEOUT,
 		TRANSPORT
 	}
 
@@ -32,6 +33,10 @@ public final class CatalogClientException extends RuntimeException {
 
 	public static CatalogClientException transport() {
 		return new CatalogClientException(Reason.TRANSPORT, null, "Catalog request could not be completed");
+	}
+
+	public static CatalogClientException timeout() {
+		return new CatalogClientException(Reason.TIMEOUT, null, "Catalog request timed out");
 	}
 
 	public Reason reason() {

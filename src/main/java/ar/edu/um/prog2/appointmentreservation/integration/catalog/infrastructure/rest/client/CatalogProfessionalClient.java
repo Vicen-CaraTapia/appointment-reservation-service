@@ -1,8 +1,12 @@
 package ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.client;
 
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.concurrent.TimeoutException;
 
 import org.springframework.http.MediaType;
 import org.springframework.web.client.ResourceAccessException;
@@ -67,12 +71,21 @@ public final class CatalogProfessionalClient {
 						}
 						return professional;
 					});
-		} catch (ResourceAccessException exception) {
-			throw CatalogClientException.transport();
 		} catch (RestClientException | JacksonException | IllegalArgumentException exception) {
 			// Raw messages can contain response data or Authorization; do not retain causes.
-			throw CatalogClientException.invalidResponse();
+			throw translateFailure(exception);
 		}
+	}
+
+	private static CatalogClientException translateFailure(RuntimeException failure) {
+		boolean transportFailure = failure instanceof ResourceAccessException;
+		for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+			if (cause instanceof HttpTimeoutException || cause instanceof SocketTimeoutException || cause instanceof TimeoutException) {
+				return CatalogClientException.timeout();
+			}
+			transportFailure |= cause instanceof IOException;
+		}
+		return transportFailure ? CatalogClientException.transport() : CatalogClientException.invalidResponse();
 	}
 
 	/** Catalog sends local-time strings; Jackson's default also accepts arrays and date-times. */

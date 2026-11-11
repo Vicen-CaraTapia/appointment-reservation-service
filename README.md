@@ -71,6 +71,10 @@ El cliente interno consulta `GET /internal/api/professionals/{id}` con el JWT
 automático y los timeouts configurados. Recibe profesional, categoría y horarios
 semanales; conserva sus estados habilitados/deshabilitados. Los errores conservan
 el status HTTP y una respuesta incompatible se rechaza como error de contrato.
+Los fallos técnicos se identifican como `HTTP` (con su status), `TIMEOUT`,
+`TRANSPORT` o `INVALID_RESPONSE`. La detección de timeout usa tipos de excepción,
+sin interpretar mensajes remotos. Una lectura interrumpida sin una causa de timeout
+identificable se informa como `TRANSPORT`; nunca se devuelve un profesional parcial.
 
 Appointment y Catalog usan la misma cuenta técnica y JWT de cátedra, exclusivamente
 en los backends. `groupId` identifica esa integración, no al usuario final.

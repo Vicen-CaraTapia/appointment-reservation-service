@@ -1,10 +1,18 @@
 package ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.client;
 
+import java.io.ByteArrayInputStream;
+import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
+import java.io.SequenceInputStream;
 import java.io.StringWriter;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.SocketTimeoutException;
+import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.interfaces.RSAPublicKey;
@@ -14,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
@@ -32,8 +41,13 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.mock.http.client.MockClientHttpRequest;
+import org.springframework.mock.http.client.MockClientHttpResponse;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -46,6 +60,7 @@ import ar.edu.um.prog2.appointmentreservation.support.CatalogJwtTestSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 @ExtendWith(OutputCaptureExtension.class)
 class CatalogProfessionalClientTest {
@@ -275,10 +290,77 @@ class CatalogProfessionalClientTest {
 			}
 		});
 		try {
-			assertFailure(client(url(server), Duration.ofMillis(100)), Reason.TRANSPORT, null);
+			assertFailure(client(url(server), Duration.ofMillis(100)), Reason.TIMEOUT, null);
 		} finally {
 			release.countDown();
 		}
+	}
+
+	@ParameterizedTest(name = "transport failure {index}")
+	@MethodSource("transportFailures")
+	void classifiesTransportFailuresByCauseTypeWithoutReadingTheirMessages(IOException failure, Reason expected) {
+		var http = RestClient.builder().baseUrl("https://catalog.example.test")
+				.requestFactory((uri, method) -> { throw failure; }).build();
+		assertFailure(new CatalogProfessionalClient(http), expected, null);
+	}
+
+	@ParameterizedTest(name = "response body failure {index}")
+	@MethodSource("bodyFailures")
+	void recognizesTimeoutAndIoFailuresWrappedDuringJsonDecoding(IOException failure, Reason expected) {
+		assertFailure(clientWithBodyFailure(failure, HttpStatus.OK), expected, null);
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = {401, 403, 404, 500, 503})
+	void anObservedHttpErrorTakesPrecedenceOverAnUnreadableErrorBody(int status) {
+		assertFailure(clientWithBodyFailure(new SocketTimeoutException(PRIVATE_DETAIL), HttpStatus.valueOf(status)), Reason.HTTP, status);
+	}
+
+	@Test
+	void malformedJsonContainingTimeoutWordsIsStillAContractError() throws IOException {
+		assertFailure(respondWith("{\"message\":\"timed out\"}"), Reason.INVALID_RESPONSE, null);
+	}
+
+	@Test
+	void boundsAStalledBodyAndKeepsUnmarkedIoAsTransportFailure() throws IOException {
+		var release = new CountDownLatch(1);
+		var headersSent = new CountDownLatch(1);
+		var server = server(exchange -> {
+			exchange.getResponseHeaders().set("Content-Type", "application/json");
+			exchange.sendResponseHeaders(200, RESPONSE.getBytes(StandardCharsets.UTF_8).length);
+			exchange.getResponseBody().write("{\"id\":".getBytes(StandardCharsets.UTF_8));
+			exchange.getResponseBody().flush();
+			headersSent.countDown();
+			try {
+				release.await(5, TimeUnit.SECONDS);
+			} catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+			}
+		});
+		var client = client(url(server), Duration.ofMillis(500));
+		try {
+			assertTimeoutPreemptively(Duration.ofSeconds(3), () -> assertFailure(client, Reason.TRANSPORT, null));
+			assertThat(headersSent.getCount()).isZero();
+		} finally {
+			release.countDown();
+		}
+	}
+
+	private CatalogProfessionalClient clientWithBodyFailure(IOException failure, HttpStatus status) {
+		var http = RestClient.builder().baseUrl("https://catalog.example.test").requestFactory((uri, method) -> {
+			var request = new MockClientHttpRequest(method, uri);
+			var prefix = new ByteArrayInputStream("{\"id\":".getBytes(StandardCharsets.UTF_8));
+			var response = new MockClientHttpResponse(new SequenceInputStream(prefix, new InputStream() {
+				@Override
+				public int read() throws IOException {
+					throw failure;
+				}
+			}), status);
+			response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+			request.setResponse(response);
+			return request;
+		}).build();
+		return new CatalogProfessionalClient(http);
 	}
 
 	private CatalogProfessionalClient respondWith(String body) throws IOException {
@@ -357,6 +439,24 @@ class CatalogProfessionalClientTest {
 
 	static Stream<Arguments> missingAndNullFields() {
 		return REQUIRED_FIELDS.stream().flatMap(path -> Stream.of(Arguments.of(path, true), Arguments.of(path, false)));
+	}
+
+	static Stream<Arguments> transportFailures() {
+		return Stream.of(
+				Arguments.of(new HttpTimeoutException(PRIVATE_DETAIL), Reason.TIMEOUT),
+				Arguments.of(new HttpConnectTimeoutException(PRIVATE_DETAIL), Reason.TIMEOUT),
+				Arguments.of(new SocketTimeoutException(PRIVATE_DETAIL), Reason.TIMEOUT),
+				Arguments.of(new IOException(PRIVATE_DETAIL, new TimeoutException(PRIVATE_DETAIL)), Reason.TIMEOUT),
+				Arguments.of(new ConnectException(PRIVATE_DETAIL), Reason.TRANSPORT),
+				Arguments.of(new IOException("timed out " + PRIVATE_DETAIL), Reason.TRANSPORT));
+	}
+
+	static Stream<Arguments> bodyFailures() {
+		return Stream.of(
+				Arguments.of(new SocketTimeoutException(PRIVATE_DETAIL), Reason.TIMEOUT),
+				Arguments.of(new IOException(PRIVATE_DETAIL, new HttpTimeoutException(PRIVATE_DETAIL)), Reason.TIMEOUT),
+				Arguments.of(new EOFException(PRIVATE_DETAIL), Reason.TRANSPORT),
+				Arguments.of(new IOException(PRIVATE_DETAIL), Reason.TRANSPORT));
 	}
 
 	static Stream<Arguments> invalidFieldTypes() {
