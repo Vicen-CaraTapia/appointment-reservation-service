@@ -67,7 +67,10 @@ y ser legible por el usuario del proceso; mantenelo fuera del repositorio y rest
 sus permisos. Se rechazan claves ausentes, inválidas o de tamaño insuficiente con
 un error redactado. El emisor interno genera JWT RS256 con la identidad de Appointment,
 audiencia de Catalog, permiso `catalog:read` y expiración configurable.
-La consulta HTTP a Catalog aún no está implementada.
+El cliente interno consulta `GET /internal/api/professionals/{id}` con el JWT
+automático y los timeouts configurados. Recibe profesional, categoría y horarios
+semanales; conserva sus estados habilitados/deshabilitados. Los errores conservan
+el status HTTP y una respuesta incompatible se rechaza como error de contrato.
 
 Appointment y Catalog usan la misma cuenta técnica y JWT de cátedra, exclusivamente
 en los backends. `groupId` identifica esa integración, no al usuario final.
@@ -263,8 +266,9 @@ export APPOINTMENT_TEST_DB_PASSWORD
 Reemplazá host, puerto y usuario antes de ejecutar. El perfil falla si faltan
 variables o no puede conectar. Cada test crea y elimina exclusivamente su esquema
 `appointment_it_<uuid>`; no apuntes estas pruebas a Catalog ni a producción.
-Las pruebas reciben datos ficticios de cátedra. Los tests HTTP del cliente REST
-utilizan servidores locales, sin credenciales ni conexiones reales externas.
+Las pruebas reciben datos ficticios de cátedra. Los tests HTTP de cátedra y Catalog
+utilizan servidores locales y credenciales ficticias o claves efímeras, sin conexiones
+reales a esos servicios.
 
 Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
 `CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,

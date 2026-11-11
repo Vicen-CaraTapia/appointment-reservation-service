@@ -21,9 +21,11 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.web.client.RestClient;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.security.CatalogInternalTokenIssuer;
+import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.client.CatalogProfessionalClient;
 import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.CatalogJwtTestSupport;
 
@@ -63,9 +65,11 @@ class CatalogIntegrationConfigurationTest {
 				.run(context -> {
 					assertThat(context).hasNotFailed();
 					assertThat(context).hasSingleBean(CatalogInternalTokenIssuer.class);
+					assertThat(context).hasSingleBean(CatalogProfessionalClient.class);
 					assertThat(context.getBean(CatalogInternalTokenIssuer.class).issue()).isNotBlank();
 					assertThat(context.getBeansOfType(Key.class)).isEmpty();
 					assertThat(context.getBeansOfType(JwtEncoder.class)).isEmpty();
+					assertThat(context.getBeansOfType(RestClient.class)).isEmpty();
 				});
 	}
 
