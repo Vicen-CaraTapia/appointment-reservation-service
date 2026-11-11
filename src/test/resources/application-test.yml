@@ -3,6 +3,15 @@ spring:
   autoconfigure:
     exclude: org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
 
+catalog:
+  integration:
+    base-url: https://catalog.example.test
+    connect-timeout: 5s
+    read-timeout: 30s
+    private-key-location: file:/not-present/appointment-test-private.pem
+    issuer: appointment-reservation-service
+    audience: catalog-sync-service
+
 catedra:
   group-id: test-project
   technical-jwt: not-a-real-catedra-token

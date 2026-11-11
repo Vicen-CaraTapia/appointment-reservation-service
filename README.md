@@ -31,6 +31,12 @@ cargarlo desde Bash, escribí sus valores entre comillas y protegelo con `chmod 
 | `APPOINTMENT_USER_JWT_SECRET` | Sí | Clave exclusiva para usuarios finales, Base64 de al menos 64 bytes aleatorios. |
 | `APPOINTMENT_USER_JWT_TTL` | No | `1h`; duración normal, positiva y en segundos enteros. |
 | `APPOINTMENT_USER_JWT_REMEMBER_ME_TTL` | No | `7d`; duración larga, positiva y no menor que la normal. |
+| `CATALOG_BASE_URL` | Sí | URL HTTP(S) absoluta de Catalog, sin credenciales embebidas, query ni fragmento. |
+| `CATALOG_CONNECT_TIMEOUT` | Sí | Timeout de conexión positivo; por ejemplo `5s`. |
+| `CATALOG_READ_TIMEOUT` | Sí | Timeout de lectura positivo; por ejemplo `30s`. |
+| `INTERNAL_CATALOG_JWT_PRIVATE_KEY_LOCATION` | Sí | URI `file:/ruta/absoluta/private.pem` de la clave privada RSA externa de Appointment. |
+| `INTERNAL_CATALOG_JWT_ISSUER` | Sí | `appointment-reservation-service`, según el contrato interno con Catalog. |
+| `INTERNAL_CATALOG_JWT_AUDIENCE` | Sí | `catalog-sync-service`, según el contrato interno con Catalog. |
 | `CATEDRA_GROUP_ID` | Sí | Identificador técnico de la integración asignado por la cátedra; no es un usuario final. |
 | `CATEDRA_TECHNICAL_JWT` | Sí | JWT técnico compartido con Catalog. Es secreto y permanece exclusivamente en los backends. |
 | `CATEDRA_REST_BASE_URL` | Sí | URL base de la API REST de la cátedra. |
@@ -48,6 +54,15 @@ La clave `APPOINTMENT_USER_JWT_SECRET` debe ser Base64 de al menos 64 bytes
 aleatorios y conservarse entre arranques para mantener válidos los tokens.
 Es independiente del JWT técnico de cátedra. Los TTL deben ser positivos, en
 segundos enteros; el de remember-me no puede ser menor que el normal.
+
+La configuración `catalog.integration` prepara la comunicación interna con Catalog.
+La clave privada RSA de Appointment debe corresponder a la clave pública configurada
+en Catalog mediante `INTERNAL_CATALOG_JWT_PUBLIC_KEY_LOCATION`; la clave privada
+permanece en Appointment. La autenticación interna usa RS256, separada del JWT HS512
+de usuarios finales y del JWT técnico de cátedra. No se configura un token interno estático.
+En A4.1 solo se validan las propiedades y la URI de archivo: todavía no se lee el
+PEM, se firma un JWT ni se realizan llamadas HTTP. La carga y validación criptográfica
+de la clave RSA (al menos 2048 bits) corresponderán a A4.2.
 
 Appointment y Catalog usan la misma cuenta técnica y JWT de cátedra, exclusivamente
 en los backends. `groupId` identifica esa integración, no al usuario final.
@@ -192,6 +207,9 @@ docker run -d --name appointment-service-local \
   -p 127.0.0.1:8082:8082 \
   -e APPOINTMENT_DB_URL -e APPOINTMENT_DB_USERNAME -e APPOINTMENT_DB_PASSWORD \
   -e APPOINTMENT_USER_JWT_SECRET \
+  -e CATALOG_BASE_URL -e CATALOG_CONNECT_TIMEOUT -e CATALOG_READ_TIMEOUT \
+  -e INTERNAL_CATALOG_JWT_PRIVATE_KEY_LOCATION \
+  -e INTERNAL_CATALOG_JWT_ISSUER -e INTERNAL_CATALOG_JWT_AUDIENCE \
   -e CATEDRA_GROUP_ID -e CATEDRA_TECHNICAL_JWT -e CATEDRA_REST_BASE_URL \
   -e CATEDRA_REST_CONNECT_TIMEOUT -e CATEDRA_REST_READ_TIMEOUT \
   -e CATEDRA_KAFKA_BOOTSTRAP_SERVERS -e CATEDRA_KAFKA_CONSUMER_GROUP_ID \
@@ -203,6 +221,8 @@ Para PostgreSQL instalado en el host, usá `host.docker.internal:<puerto>` en la
 URL JDBC; en Linux agregá `--add-host=host.docker.internal:host-gateway` y verificá
 que PostgreSQL permita conexiones desde Docker. El Compose compartido se administra
 fuera de este repositorio; esta imagen no incluye las bases ni la infraestructura de cátedra.
+La URI de clave privada debe referirse a una ruta dentro del contenedor; cuando A4.2
+incorpore su lectura, el PEM externo deberá montarse allí con acceso de solo lectura.
 
 El health check usa `/actuator/health`. Si configurás otro `SERVER_PORT`, pasalo
 con `-e SERVER_PORT` y ajustá el puerto de destino de `-p`.

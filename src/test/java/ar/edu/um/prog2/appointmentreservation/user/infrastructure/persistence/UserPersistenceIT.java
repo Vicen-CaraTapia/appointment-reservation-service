@@ -28,6 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
 import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupport;
+import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.AuthorityEntity;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.UserEntity;
@@ -70,7 +71,7 @@ class UserPersistenceIT {
 				"spring.jpa.properties.hibernate.default_schema", schema,
 				"spring.jpa.hibernate.ddl-auto", "validate");
 		context = new SpringApplicationBuilder(AppointmentReservationApplication.class)
-				.initializers(CatedraIntegrationTestSupport::configure)
+				.initializers(CatedraIntegrationTestSupport::configure, CatalogIntegrationTestSupport::configure)
 				.web(WebApplicationType.NONE)
 				.initializers(application -> application.getEnvironment().getPropertySources().addFirst(
 						new MapPropertySource("userPersistenceTest", properties)))
