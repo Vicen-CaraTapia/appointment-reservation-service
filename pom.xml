@@ -153,6 +153,21 @@
 						<artifactId>maven-failsafe-plugin</artifactId>
 						<executions>
 							<execution>
+								<id>default</id>
+								<phase>none</phase>
+							</execution>
+							<execution>
+								<id>postgres-it</id>
+								<configuration>
+									<includes>
+										<include>**/FlywayMigrationIT.java</include>
+										<include>**/UserPersistenceIT.java</include>
+										<include>**/UserRegistrationIT.java</include>
+										<include>**/UserRegistrationHttpIT.java</include>
+										<include>**/FinalUserAuthenticationHttpIT.java</include>
+									</includes>
+									<summaryFile>${project.build.directory}/failsafe-reports/postgres-summary.xml</summaryFile>
+								</configuration>
 								<goals>
 									<goal>integration-test</goal>
 									<goal>verify</goal>
@@ -182,6 +197,36 @@
 										<include>**/CatedraKafkaConnectivityIT.java</include>
 									</includes>
 									<summaryFile>${project.build.directory}/failsafe-reports/kafka-summary.xml</summaryFile>
+								</configuration>
+								<goals>
+									<goal>integration-test</goal>
+									<goal>verify</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+		<profile>
+			<id>catalog-integration</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>default</id>
+								<phase>none</phase>
+							</execution>
+							<execution>
+								<id>catalog-it</id>
+								<configuration>
+									<includes>
+										<include>**/CatalogProfessionalClientIT.java</include>
+									</includes>
+									<summaryFile>${project.build.directory}/failsafe-reports/catalog-summary.xml</summaryFile>
 								</configuration>
 								<goals>
 									<goal>integration-test</goal>

@@ -270,6 +270,28 @@ Las pruebas reciben datos ficticios de cátedra. Los tests HTTP de cátedra y Ca
 utilizan servidores locales y credenciales ficticias o claves efímeras, sin conexiones
 reales a esos servicios.
 
+Para probar el cliente de Appointment contra un Catalog en ejecución, configurá
+las variables `CATALOG_*` e `INTERNAL_CATALOG_JWT_*` de la tabla anterior. Catalog
+debe usar la clave pública correspondiente. Indicá un profesional existente y un
+ID confirmado como inexistente en esa instancia:
+
+```bash
+export APPOINTMENT_TEST_CATALOG_PROFESSIONAL_ID='<existing-professional-id>'
+export APPOINTMENT_TEST_CATALOG_MISSING_PROFESSIONAL_ID='<confirmed-missing-professional-id>'
+./mvnw -Pcatalog-integration verify
+```
+
+Reemplazá ambos placeholders antes de ejecutar. Este perfil realiza únicamente
+consultas HTTP autenticadas: comprueba la respuesta del profesional y el `404` del
+ID inexistente, sin crear ni modificar datos. Ejecuta la configuración, firma y
+cliente reales de Appointment en un contexto sin servidor HTTP, PostgreSQL ni Kafka.
+No requiere arrancar el servidor completo de Appointment ni cargar sus credenciales
+de base, JWT de usuarios finales o cátedra. La salida muestra solo IDs, estado y
+cantidad de horarios; nunca el JWT interno ni la clave privada.
+
+Los perfiles `postgres-integration`, `kafka-integration` y `catalog-integration`
+seleccionan sus propias pruebas y guardan resúmenes Failsafe separados.
+
 Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
 `CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,
 `CATEDRA_KAFKA_APPOINTMENT_ACTIONS_TOPIC` y
@@ -281,8 +303,8 @@ El reporte de cobertura HTML está en `target/site/jacoco/index.html`.
 ## CI y SonarQube Cloud
 
 GitHub Actions ejecuta build y tests normales en PR hacia `develop`, `main` y
-`milestone/**`, y en push a `develop`/`main`. El perfil PostgreSQL es explícito y
-no se ejecuta en ese workflow. El análisis Sonar espera el Quality Gate.
+`milestone/**`, y en push a `develop`/`main`. Los perfiles de integración externa
+son explícitos y no se ejecutan en ese workflow. El análisis Sonar espera el Quality Gate.
 
 Configuración requerida en Settings → Secrets and variables → Actions:
 
