@@ -32,6 +32,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
 import ar.edu.um.prog2.appointmentreservation.support.CatedraIntegrationTestSupport;
+import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.application.exception.DuplicateUserException.Field;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.AuthorityEntity;
@@ -77,7 +78,7 @@ class UserRegistrationHttpIT {
 				"spring.jpa.hibernate.ddl-auto", "validate",
 				"server.port", 0);
 		context = new SpringApplicationBuilder(AppointmentReservationApplication.class)
-				.initializers(CatedraIntegrationTestSupport::configure)
+				.initializers(CatedraIntegrationTestSupport::configure, CatalogIntegrationTestSupport::configure)
 				.web(WebApplicationType.SERVLET)
 				.initializers(application -> application.getEnvironment().getPropertySources().addFirst(
 						new MapPropertySource("userRegistrationHttpTest", properties)))
