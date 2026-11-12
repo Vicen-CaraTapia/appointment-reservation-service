@@ -76,6 +76,15 @@ Los fallos técnicos se identifican como `HTTP` (con su status), `TIMEOUT`,
 sin interpretar mensajes remotos. Una lectura interrumpida sin una causa de timeout
 identificable se informa como `TRANSPORT`; nunca se devuelve un profesional parcial.
 
+La consulta validada de la aplicación exige una lectura actual exitosa y un profesional
+habilitado. Distingue `CATALOG_TIMEOUT`, `CATALOG_UNAVAILABLE`, `CATALOG_UNAUTHORIZED`,
+`CATALOG_FORBIDDEN`, `INVALID_CATALOG_RESPONSE`, `NOT_FOUND` y `DISABLED`.
+Los códigos de acceso a Catalog corresponden a la identidad entre servicios.
+Cada invocación vuelve a consultar la fuente; no hay caché ni reemplazo por datos
+históricos. Registro y autenticación de usuarios no dependen de esta consulta.
+La validación está disponible para los casos de uso; los flujos de disponibilidad
+y reservas todavía no están implementados.
+
 Appointment y Catalog usan la misma cuenta técnica y JWT de cátedra, exclusivamente
 en los backends. `groupId` identifica esa integración, no al usuario final.
 Usá los nombres exactos de topics y consumer group recibidos de cátedra; no los
@@ -276,7 +285,7 @@ reales a esos servicios.
 
 Para probar el cliente de Appointment contra un Catalog en ejecución, configurá
 las variables `CATALOG_*` e `INTERNAL_CATALOG_JWT_*` de la tabla anterior. Catalog
-debe usar la clave pública correspondiente. Indicá un profesional existente y un
+debe usar la clave pública correspondiente. Indicá un profesional existente y habilitado, y un
 ID confirmado como inexistente en esa instancia:
 
 ```bash
@@ -286,9 +295,9 @@ export APPOINTMENT_TEST_CATALOG_MISSING_PROFESSIONAL_ID='<confirmed-missing-prof
 ```
 
 Reemplazá ambos placeholders antes de ejecutar. Este perfil realiza únicamente
-consultas HTTP autenticadas: comprueba la respuesta del profesional y el `404` del
-ID inexistente, sin crear ni modificar datos. Ejecuta la configuración, firma y
-cliente reales de Appointment en un contexto sin servidor HTTP, PostgreSQL ni Kafka.
+consultas HTTP autenticadas: comprueba el cliente, la consulta de aplicación validada
+y la traducción del `404` a `NOT_FOUND`, sin crear ni modificar datos. Ejecuta la
+configuración, firma y cliente reales de Appointment en un contexto sin servidor HTTP, PostgreSQL ni Kafka.
 No requiere arrancar el servidor completo de Appointment ni cargar sus credenciales
 de base, JWT de usuarios finales o cátedra. La salida muestra solo IDs, estado y
 cantidad de horarios; nunca el JWT interno ni la clave privada.

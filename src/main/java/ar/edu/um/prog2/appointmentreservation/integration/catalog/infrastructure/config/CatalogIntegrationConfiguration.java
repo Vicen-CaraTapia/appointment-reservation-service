@@ -9,7 +9,10 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.client.CatalogProfessionalClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.adapter.CatalogCurrentProfessionalAdapter;
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.security.CatalogInternalTokenIssuer;
+import ar.edu.um.prog2.appointmentreservation.professional.application.port.out.CurrentProfessionalSource;
+import ar.edu.um.prog2.appointmentreservation.professional.application.usecase.LoadEnabledProfessionalUseCase;
 
 @Configuration(proxyBeanMethods = false)
 public class CatalogIntegrationConfiguration {
@@ -31,5 +34,15 @@ public class CatalogIntegrationConfiguration {
 					return execution.execute(request, body);
 				}).build();
 		return new CatalogProfessionalClient(http);
+	}
+
+	@Bean
+	public CurrentProfessionalSource currentProfessionalSource(CatalogProfessionalClient client) {
+		return new CatalogCurrentProfessionalAdapter(client);
+	}
+
+	@Bean
+	public LoadEnabledProfessionalUseCase loadEnabledProfessionalUseCase(CurrentProfessionalSource professionals) {
+		return new LoadEnabledProfessionalUseCase(professionals);
 	}
 }
