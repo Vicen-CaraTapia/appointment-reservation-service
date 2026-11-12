@@ -17,6 +17,8 @@ import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.config.CatalogIntegrationProperties;
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.exception.CatalogClientException;
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.exception.CatalogClientException.Reason;
+import ar.edu.um.prog2.appointmentreservation.professional.application.exception.ProfessionalLookupException;
+import ar.edu.um.prog2.appointmentreservation.professional.application.usecase.LoadEnabledProfessionalUseCase;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,6 +31,9 @@ class CatalogProfessionalClientIT {
 
 	@Autowired
 	private CatalogProfessionalClient client;
+
+	@Autowired
+	private LoadEnabledProfessionalUseCase lookup;
 
 	@Autowired
 	private Environment environment;
@@ -56,6 +61,23 @@ class CatalogProfessionalClientIT {
 					assertThat(error).hasNoCause();
 				});
 		System.out.println("Catalog integration OK: unknown professional returns HTTP 404");
+	}
+
+	@Test
+	void loadsTheEnabledProfessionalThroughTheApplicationBoundary() {
+		long id = requiredId("APPOINTMENT_TEST_CATALOG_PROFESSIONAL_ID");
+		var professional = lookup.load(id);
+		assertThat(professional.id()).isEqualTo(id);
+		assertThat(professional.enabled()).isTrue();
+		System.out.println("Catalog application lookup OK: current enabled professional accepted");
+	}
+
+	@Test
+	void translatesTheRealNotFoundIntoAnApplicationFailure() {
+		long id = requiredId("APPOINTMENT_TEST_CATALOG_MISSING_PROFESSIONAL_ID");
+		assertThatThrownBy(() -> lookup.load(id)).isInstanceOfSatisfying(ProfessionalLookupException.class,
+				failure -> assertThat(failure.reason()).isEqualTo(ProfessionalLookupException.Reason.NOT_FOUND));
+		System.out.println("Catalog application lookup OK: unknown professional produces NOT_FOUND");
 	}
 
 	private long requiredId(String name) {

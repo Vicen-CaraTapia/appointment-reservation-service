@@ -28,6 +28,8 @@ import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.client.CatalogProfessionalClient;
 import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.CatalogJwtTestSupport;
+import ar.edu.um.prog2.appointmentreservation.professional.application.port.out.CurrentProfessionalSource;
+import ar.edu.um.prog2.appointmentreservation.professional.application.usecase.LoadEnabledProfessionalUseCase;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,6 +68,8 @@ class CatalogIntegrationConfigurationTest {
 					assertThat(context).hasNotFailed();
 					assertThat(context).hasSingleBean(CatalogInternalTokenIssuer.class);
 					assertThat(context).hasSingleBean(CatalogProfessionalClient.class);
+					assertThat(context).hasSingleBean(CurrentProfessionalSource.class);
+					assertThat(context).hasSingleBean(LoadEnabledProfessionalUseCase.class);
 					assertThat(context.getBean(CatalogInternalTokenIssuer.class).issue()).isNotBlank();
 					assertThat(context.getBeansOfType(Key.class)).isEmpty();
 					assertThat(context.getBeansOfType(JwtEncoder.class)).isEmpty();
