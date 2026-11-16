@@ -11,9 +11,15 @@ import tools.jackson.databind.ObjectMapper;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraRestClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentOccupanciesClient;
 
 @Configuration(proxyBeanMethods = false)
 public class CatedraRestClientConfiguration {
+
+	@Bean
+	public CatedraAppointmentOccupanciesClient catedraAppointmentOccupanciesClient(CatedraRestClient rest) {
+		return new CatedraAppointmentOccupanciesClient(rest);
+	}
 
 	@Bean
 	public CatedraRestClient catedraRestClient(CatedraIntegrationProperties properties, ObjectMapper json) {
