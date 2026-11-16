@@ -7,10 +7,13 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
@@ -28,6 +31,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import ar.edu.um.prog2.appointmentreservation.availability.application.usecase.CalculateAppointmentAvailabilityUseCase;
+import ar.edu.um.prog2.appointmentreservation.availability.application.exception.InvalidAvailabilityScheduleException;
+import ar.edu.um.prog2.appointmentreservation.availability.application.exception.OccupancyLookupException;
+import ar.edu.um.prog2.appointmentreservation.professional.application.exception.ProfessionalLookupException;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.FinalUserHttpSecurityConfiguration;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.FinalUserJwtProperties;
@@ -191,6 +197,84 @@ class AppointmentAvailabilityControllerTest {
 		mvc.perform(post(PATH).header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
 				.andExpect(status().isMethodNotAllowed());
 		verifyNoInteractions(availability);
+	}
+
+	@ParameterizedTest
+	@MethodSource("professionalFailures")
+	void mapsProfessionalLookupFailuresWithoutExposingInternalSources(
+			ProfessionalLookupException.Reason reason, int expectedStatus, String expectedCode, CapturedOutput output) throws Exception {
+		assertSafeFailure(new ProfessionalLookupException(reason), expectedStatus, expectedCode, output);
+	}
+
+	static Stream<Arguments> professionalFailures() {
+		return Stream.of(
+				Arguments.of(ProfessionalLookupException.Reason.NOT_FOUND, 404, "PROFESSIONAL_NOT_FOUND"),
+				Arguments.of(ProfessionalLookupException.Reason.DISABLED, 409, "PROFESSIONAL_DISABLED"),
+				Arguments.of(ProfessionalLookupException.Reason.CATALOG_TIMEOUT, 504, "AVAILABILITY_TIMEOUT"),
+				Arguments.of(ProfessionalLookupException.Reason.CATALOG_UNAVAILABLE, 503, "AVAILABILITY_UNAVAILABLE"),
+				Arguments.of(ProfessionalLookupException.Reason.CATALOG_UNAUTHORIZED, 502, "AVAILABILITY_DEPENDENCY_ERROR"),
+				Arguments.of(ProfessionalLookupException.Reason.CATALOG_FORBIDDEN, 502, "AVAILABILITY_DEPENDENCY_ERROR"),
+				Arguments.of(ProfessionalLookupException.Reason.INVALID_CATALOG_RESPONSE, 502, "AVAILABILITY_DEPENDENCY_ERROR"));
+	}
+
+	@ParameterizedTest
+	@MethodSource("occupancyFailures")
+	void mapsOccupancyFailuresWithoutReportingFreeSlotsOrChallengingTheFinalUser(
+			OccupancyLookupException.Reason reason, int expectedStatus, String expectedCode, CapturedOutput output) throws Exception {
+		assertSafeFailure(new OccupancyLookupException(reason), expectedStatus, expectedCode, output);
+	}
+
+	static Stream<Arguments> occupancyFailures() {
+		return Stream.of(
+				Arguments.of(OccupancyLookupException.Reason.TIMEOUT, 504, "AVAILABILITY_TIMEOUT"),
+				Arguments.of(OccupancyLookupException.Reason.UNAVAILABLE, 503, "AVAILABILITY_UNAVAILABLE"),
+				Arguments.of(OccupancyLookupException.Reason.UNAUTHORIZED, 502, "AVAILABILITY_DEPENDENCY_ERROR"),
+				Arguments.of(OccupancyLookupException.Reason.FORBIDDEN, 502, "AVAILABILITY_DEPENDENCY_ERROR"),
+				Arguments.of(OccupancyLookupException.Reason.NOT_FOUND, 502, "AVAILABILITY_DEPENDENCY_ERROR"),
+				Arguments.of(OccupancyLookupException.Reason.CONFLICT, 502, "AVAILABILITY_DEPENDENCY_ERROR"),
+				Arguments.of(OccupancyLookupException.Reason.REQUEST_REJECTED, 502, "AVAILABILITY_DEPENDENCY_ERROR"),
+				Arguments.of(OccupancyLookupException.Reason.INVALID_RESPONSE, 502, "AVAILABILITY_DEPENDENCY_ERROR"));
+	}
+
+	@Test
+	void anInvalidCurrentScheduleIsAnUpstreamDataProblemRatherThanBadUserParameters(CapturedOutput output) throws Exception {
+		assertSafeFailure(new InvalidAvailabilityScheduleException(), 502, "AVAILABILITY_DEPENDENCY_ERROR", output);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"argument", "state", "unexpected"})
+	void unexpectedRuntimeErrorsAreSanitizedWithoutTreatingAllIllegalArgumentsAsClientErrors(
+			String kind, CapturedOutput output) throws Exception {
+		RuntimeException failure = switch (kind) {
+			case "argument" -> new IllegalArgumentException(PRIVATE_INPUT);
+			case "state" -> new IllegalStateException(PRIVATE_INPUT);
+			default -> new RuntimeException(PRIVATE_INPUT);
+		};
+		assertSafeFailure(failure, 500, "AVAILABILITY_FAILED", output);
+	}
+
+	private void assertSafeFailure(RuntimeException failure, int expectedStatus, String expectedCode,
+			CapturedOutput output) throws Exception {
+		failure.initCause(new RuntimeException(PRIVATE_INPUT));
+		when(availability.calculate(202, DATE)).thenThrow(failure);
+		String token = validToken();
+		String body = mvc.perform(get(PATH).param("professionalId", "202").param("date", DATE.toString())
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+				.andExpect(status().is(expectedStatus))
+				.andExpect(jsonPath("$.status").value(expectedStatus))
+				.andExpect(jsonPath("$.code").value(expectedCode))
+				.andExpect(jsonPath("$.detail").isString())
+				.andExpect(jsonPath("$.slots").doesNotExist())
+				.andExpect(header().string(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_PROBLEM_JSON_VALUE))
+				.andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+				.andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+				.andExpect(header().doesNotExist(HttpHeaders.WWW_AUTHENTICATE))
+				.andReturn().getResponse().getContentAsString();
+		assertThat(body).doesNotContain(PRIVATE_INPUT, token, SECRET, "Catalog", "Catedra", "catalog", "catedra",
+				"Exception", "stackTrace", "password", "technicalJwt", "privateKey");
+		assertThat(output.getAll()).doesNotContain(PRIVATE_INPUT, token, SECRET);
+		verify(availability).calculate(202, DATE);
+		verifyNoMoreInteractions(availability);
 	}
 
 	private static String validToken() {

@@ -240,6 +240,22 @@ Responde 200 con `Cache-Control: no-store`; sin horarios disponibles devuelve
 de Catalog y cátedra permanecen en Appointment. La consulta no crea un hold ni
 garantiza que una posición siga libre al intentar reservarla.
 
+Los errores de disponibilidad usan `application/problem+json` y `Cache-Control: no-store`:
+
+| Situación | HTTP | Código |
+| --- | --- | --- |
+| Parámetros ausentes o mal formados | 400 | `INVALID_REQUEST` |
+| JWT de usuario ausente o inválido | 401 | `UNAUTHORIZED` |
+| Profesional inexistente en el catálogo vigente | 404 | `PROFESSIONAL_NOT_FOUND` |
+| Profesional deshabilitado | 409 | `PROFESSIONAL_DISABLED` |
+| No se pudo verificar la respuesta o autenticación de una dependencia | 502 | `AVAILABILITY_DEPENDENCY_ERROR` |
+| Dependencia indisponible | 503 | `AVAILABILITY_UNAVAILABLE` |
+| Timeout al consultar una dependencia | 504 | `AVAILABILITY_TIMEOUT` |
+| Fallo interno inesperado | 500 | `AVAILABILITY_FAILED` |
+
+Un fallo de consulta no devuelve slots ni se transforma en una lista vacía. Los
+problemas de autenticación entre backends no producen un 401 del usuario final.
+
 ## Docker
 
 ```bash
