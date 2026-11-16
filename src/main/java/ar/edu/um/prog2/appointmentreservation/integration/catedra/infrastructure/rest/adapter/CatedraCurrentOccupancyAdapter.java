@@ -9,6 +9,7 @@ import ar.edu.um.prog2.appointmentreservation.availability.application.exception
 import ar.edu.um.prog2.appointmentreservation.availability.application.exception.OccupancyLookupException.Reason;
 import ar.edu.um.prog2.appointmentreservation.availability.application.port.out.CurrentOccupancySource;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentOccupanciesClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentOccupanciesResponse.Occupancy;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.exception.CatedraHttpException;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.exception.CatedraRestException;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.exception.CatedraTimeoutException;
@@ -27,7 +28,7 @@ public final class CatedraCurrentOccupancyAdapter implements CurrentOccupancySou
 		try {
 			// Both statuses returned by the validated client block the position. The cátedra decides hold expiry.
 			return client.getOccupancies(professionalId, date, date).occupancies().stream()
-					.map(occupancy -> occupancy.startTime()).collect(Collectors.toUnmodifiableSet());
+					.map(Occupancy::startTime).collect(Collectors.toUnmodifiableSet());
 		} catch (CatedraRestException failure) {
 			throw new OccupancyLookupException(reason(failure));
 		}

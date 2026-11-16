@@ -19,7 +19,7 @@ public final class AvailableAppointmentSlotsCalculator {
 		Objects.requireNonNull(occupiedStartTimes, "Current occupied start times are required");
 		var available = new TreeSet<LocalTime>();
 		for (var schedule : schedules) {
-			if (!schedule.enabled() || schedule.dayOfWeek() != date.getDayOfWeek()) {
+			if (!schedule.enabled() || !schedule.dayOfWeek().equals(date.getDayOfWeek())) {
 				continue;
 			}
 			if (schedule.slotDurationMinutes() <= 0 || !schedule.startTime().isBefore(schedule.endTime())) {

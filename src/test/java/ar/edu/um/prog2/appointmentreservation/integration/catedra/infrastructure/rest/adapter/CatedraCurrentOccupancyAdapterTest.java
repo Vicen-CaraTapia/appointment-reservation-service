@@ -49,7 +49,7 @@ class CatedraCurrentOccupancyAdapterTest {
 				new Occupancy(DATE, LocalTime.of(10, 30), Status.HELD, Instant.parse("2099-01-01T00:00:00Z")))));
 		var blocked = new CatedraCurrentOccupancyAdapter(client).loadBlockedStartTimes(201, DATE);
 		assertThat(blocked).containsExactlyInAnyOrder(LocalTime.of(9, 0), LocalTime.of(9, 30), LocalTime.of(10, 0), LocalTime.of(10, 30));
-		assertThatThrownBy(() -> blocked.clear()).isInstanceOf(UnsupportedOperationException.class);
+		assertThatThrownBy(blocked::clear).isInstanceOf(UnsupportedOperationException.class);
 		verify(client).getOccupancies(201, DATE, DATE);
 		verifyNoMoreInteractions(client);
 	}

@@ -29,7 +29,7 @@ public final class CalculateAppointmentAvailabilityUseCase {
 		}
 		var professional = professionals.load(professionalId);
 		var schedules = professional.weeklySchedules();
-		if (schedules.stream().noneMatch(schedule -> schedule.enabled() && schedule.dayOfWeek() == date.getDayOfWeek())) {
+		if (schedules.stream().noneMatch(schedule -> schedule.enabled() && schedule.dayOfWeek().equals(date.getDayOfWeek()))) {
 			return List.of();
 		}
 		var occupied = occupancies.loadBlockedStartTimes(professionalId, date);

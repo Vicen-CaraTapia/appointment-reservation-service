@@ -113,7 +113,9 @@ class AvailableAppointmentSlotsCalculatorTest {
 	@ParameterizedTest
 	@ValueSource(ints = {0, -1, Integer.MIN_VALUE})
 	void rejectsNonpositiveDurationsInApplicableSchedules(int duration) {
-		assertThatThrownBy(() -> calculator.calculate(MONDAY, List.of(schedule("09:00", "10:00", duration)), Set.of()))
+		var schedules = List.of(schedule("09:00", "10:00", duration));
+		Set<LocalTime> occupied = Set.of();
+		assertThatThrownBy(() -> calculator.calculate(MONDAY, schedules, occupied))
 				.isInstanceOf(IllegalArgumentException.class)
 				.hasMessage("Applicable weekly schedule must have a positive slot duration and start before end");
 	}
@@ -121,7 +123,9 @@ class AvailableAppointmentSlotsCalculatorTest {
 	@ParameterizedTest
 	@CsvSource({"09:00,09:00", "10:00,09:00", "23:00,01:00"})
 	void rejectsEmptyReversedAndOvernightApplicableIntervals(String start, String end) {
-		assertThatThrownBy(() -> calculator.calculate(MONDAY, List.of(schedule(start, end, 30)), Set.of()))
+		var schedules = List.of(schedule(start, end, 30));
+		Set<LocalTime> occupied = Set.of();
+		assertThatThrownBy(() -> calculator.calculate(MONDAY, schedules, occupied))
 				.isInstanceOf(IllegalArgumentException.class);
 	}
 
