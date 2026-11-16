@@ -16,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import ar.edu.um.prog2.appointmentreservation.availability.application.exception.OccupancyLookupException;
+import ar.edu.um.prog2.appointmentreservation.availability.application.exception.InvalidAvailabilityScheduleException;
 import ar.edu.um.prog2.appointmentreservation.availability.application.port.out.CurrentOccupancySource;
 import ar.edu.um.prog2.appointmentreservation.availability.application.service.AvailableAppointmentSlotsCalculator;
 import ar.edu.um.prog2.appointmentreservation.professional.application.exception.ProfessionalLookupException;
@@ -163,7 +164,7 @@ class CalculateAppointmentAvailabilityUseCaseTest {
 		when(professionals.load(201)).thenReturn(professional(List.of(
 				new CurrentProfessional.WeeklySchedule(301, DayOfWeek.MONDAY, LocalTime.of(9, 0), LocalTime.NOON, 0, true))));
 		when(occupancies.loadBlockedStartTimes(201, DATE)).thenReturn(Set.of());
-		assertThatThrownBy(() -> useCase.calculate(201, DATE)).isInstanceOf(IllegalArgumentException.class);
+		assertThatThrownBy(() -> useCase.calculate(201, DATE)).isInstanceOf(InvalidAvailabilityScheduleException.class);
 	}
 
 	private static CurrentProfessional professional(boolean enabled) {

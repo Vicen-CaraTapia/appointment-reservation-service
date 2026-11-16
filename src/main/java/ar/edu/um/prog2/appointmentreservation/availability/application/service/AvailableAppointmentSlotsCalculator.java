@@ -8,6 +8,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
+import ar.edu.um.prog2.appointmentreservation.availability.application.exception.InvalidAvailabilityScheduleException;
 import ar.edu.um.prog2.appointmentreservation.professional.application.model.CurrentProfessional.WeeklySchedule;
 
 /** Pure calculation for one date; callers supply current schedules and occupied start times. */
@@ -23,8 +24,7 @@ public final class AvailableAppointmentSlotsCalculator {
 				continue;
 			}
 			if (schedule.slotDurationMinutes() <= 0 || !schedule.startTime().isBefore(schedule.endTime())) {
-				throw new IllegalArgumentException(
-						"Applicable weekly schedule must have a positive slot duration and start before end");
+				throw new InvalidAvailabilityScheduleException();
 			}
 			var duration = Duration.ofMinutes(schedule.slotDurationMinutes());
 			var start = schedule.startTime();

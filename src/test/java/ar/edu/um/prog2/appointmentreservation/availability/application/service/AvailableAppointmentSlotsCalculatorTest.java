@@ -15,6 +15,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import ar.edu.um.prog2.appointmentreservation.professional.application.model.CurrentProfessional.WeeklySchedule;
+import ar.edu.um.prog2.appointmentreservation.availability.application.exception.InvalidAvailabilityScheduleException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -116,7 +117,7 @@ class AvailableAppointmentSlotsCalculatorTest {
 		var schedules = List.of(schedule("09:00", "10:00", duration));
 		Set<LocalTime> occupied = Set.of();
 		assertThatThrownBy(() -> calculator.calculate(MONDAY, schedules, occupied))
-				.isInstanceOf(IllegalArgumentException.class)
+				.isInstanceOf(InvalidAvailabilityScheduleException.class)
 				.hasMessage("Applicable weekly schedule must have a positive slot duration and start before end");
 	}
 
@@ -126,7 +127,7 @@ class AvailableAppointmentSlotsCalculatorTest {
 		var schedules = List.of(schedule(start, end, 30));
 		Set<LocalTime> occupied = Set.of();
 		assertThatThrownBy(() -> calculator.calculate(MONDAY, schedules, occupied))
-				.isInstanceOf(IllegalArgumentException.class);
+				.isInstanceOf(InvalidAvailabilityScheduleException.class);
 	}
 
 	@Test
@@ -142,7 +143,7 @@ class AvailableAppointmentSlotsCalculatorTest {
 	void doesNotReturnPartialAvailabilityWhenALaterApplicableRuleIsInvalid() {
 		var schedules = List.of(schedule("09:00", "10:00", 30), schedule("15:00", "16:00", 0));
 		assertThatThrownBy(() -> calculator.calculate(MONDAY, schedules, Set.of()))
-				.isInstanceOf(IllegalArgumentException.class);
+				.isInstanceOf(InvalidAvailabilityScheduleException.class);
 	}
 
 	@Test
