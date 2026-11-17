@@ -7,8 +7,10 @@ import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Profile;
 
 @SpringBootConfiguration
+@Profile("kafka-connectivity-test")
 @EnableAutoConfiguration(excludeName = {
 		"org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
 		"org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration",
