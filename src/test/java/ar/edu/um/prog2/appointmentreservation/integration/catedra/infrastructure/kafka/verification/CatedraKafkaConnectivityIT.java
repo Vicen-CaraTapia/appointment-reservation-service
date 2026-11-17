@@ -6,7 +6,9 @@ import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 
+@ActiveProfiles("kafka-connectivity-test")
 @SpringBootTest(
 		classes = KafkaIntegrationTestApplication.class,
 		webEnvironment = SpringBootTest.WebEnvironment.NONE,

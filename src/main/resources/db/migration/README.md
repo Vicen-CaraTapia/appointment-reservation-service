@@ -19,6 +19,46 @@ last_modified_by/date son opcionales hasta que haya una modificación.
 
 Los tests aplican las migraciones en esquemas temporales, nunca en Catalog.
 
+## Proceso de reserva — V2
+
+`V2__create_reservation_process.sql` agrega `reservation_process`. El ID local es
+BIGINT identity y se mantiene separado de `hold_id` y
+`external_reservation_process_id`, que son identificadores opacos externos de tipo
+TEXT. Sus restricciones UNIQUE permiten múltiples NULL antes de obtener un hold.
+No existe una restricción única por profesional/fecha/hora: la concurrencia del
+hold pertenece a la cátedra.
+
+`owner_user_id` es una FK obligatoria a `app_user`, sin borrado en cascada. El
+profesional se almacena únicamente como un BIGINT escalar, sin relación con Catalog.
+La fecha usa DATE, la hora local TIME(6) WITHOUT TIME ZONE y las expiraciones y
+fechas de auditoría TIMESTAMP WITH TIME ZONE. PostgreSQL conserva precisión de
+microsegundos para los valores temporales persistidos.
+La hora utiliza el mapeo JDBC directo de `LocalTime` para conservar esa precisión,
+evitando su conversión intermedia a `java.sql.Time`.
+
+La lógica de aplicación deriva `externalPatientId` como `user-<id-interno>` del
+usuario final confiable del backend. La entidad y una restricción SQL verifican
+que coincida con el propietario. No se obtiene de login, email, groupId ni de un
+campo de propietario enviado por un cliente. Esta Issue no implementa todavía la
+extracción del usuario autenticado ni una API de inicio de reserva.
+
+Los estados locales actuales son `PENDING_HOLD` y `HELD`, almacenados como texto.
+Un proceso pendiente puede carecer de identificadores externos y expiración;
+`HELD` exige ambos IDs y `expires_at`. La entidad solo permite adjuntar una vez un
+resultado de hold completo, sin realizar ninguna llamada externa ni modificar su
+expiración. La auditoría sigue las convenciones de usuarios: creación obligatoria
+y modificación con actor del backend y fecha cuando cambia una fila existente.
+
+`PENDING_HOLD` no demuestra que la cátedra haya rechazado la solicitud ni que no
+exista un hold remoto. Un timeout ambiguo no debe transformarse automáticamente
+en un fallo definitivo o en un nuevo POST. A6.1 no implementa solicitudes,
+reintentos, reconciliación ni transiciones por timeout. La secuencia de persistencia
+y llamada remota se concretará al implementar el caso de uso de inicio.
+
+Los futuros estados se incorporarán mediante cambios explícitos en el enum y
+nuevas migraciones para sus restricciones, sin reescribir V2. No se agregan aún
+tablas de eventos Kafka, teléfonos ni flujos de confirmación o cancelación.
+
 Usar `V<version>__<descripcion>.sql`, con versiones únicas y crecientes.
 No modificar ni renombrar migraciones aplicadas o compartidas: agregar una nueva
 versión correctiva. No agregar migraciones vacías ni usar `baseline-on-migrate`
