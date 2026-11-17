@@ -92,6 +92,13 @@ calcules a partir de `groupId`. Los dos timeouts son obligatorios, positivos y
 aceptan formatos como `5s` y `30s`. La URL REST debe ser HTTP(S) absoluta, sin
 credenciales embebidas, query ni fragmento; admite un prefijo de ruta.
 
+El cliente backend de holds utiliza `POST /api/appointment-holds` con el JWT técnico
+y exige `201 Created` con los identificadores, estado `HELD` y vencimiento remoto.
+Los rechazos funcionales se distinguen por status y code, nunca por `detail`.
+No reintenta automáticamente: un timeout o una respuesta inválida pueden dejar
+incierto el resultado remoto. Este cliente todavía no expone una ruta pública
+para iniciar reservas ni persiste el hold.
+
 La configuración Kafka prepara las factories y el template, sin registrar listeners,
 consumir, publicar ni crear topics. El arranque y el health check no verifican la
 conectividad con el broker.

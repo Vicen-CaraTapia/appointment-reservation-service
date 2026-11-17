@@ -8,6 +8,8 @@ import java.util.concurrent.TimeoutException;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConversionException;
 import org.springframework.web.client.ResourceAccessException;
@@ -33,21 +35,27 @@ public final class CatedraRestClient {
 	}
 
 	public <T> @Nullable T get(String relativePath, Class<T> responseType) {
-		return exchange(HttpMethod.GET, relativePath, null, responseType);
+		return exchange(HttpMethod.GET, relativePath, null, responseType, null);
 	}
 
 	public <T> @Nullable T post(String relativePath, Object body, Class<T> responseType) {
-		return exchange(HttpMethod.POST, relativePath, body, responseType);
+		return exchange(HttpMethod.POST, relativePath, body, responseType, null);
 	}
 
-	private <T> @Nullable T exchange(HttpMethod method, String path, @Nullable Object body, Class<T> responseType) {
+	/** Use for operations whose successful contract requires 201 and a JSON response. */
+	public <T> @Nullable T postCreated(String relativePath, Object body, Class<T> responseType) {
+		return exchange(HttpMethod.POST, relativePath, body, responseType, HttpStatus.CREATED);
+	}
+
+	private <T> @Nullable T exchange(HttpMethod method, String path, @Nullable Object body, Class<T> responseType,
+			@Nullable HttpStatusCode expectedStatus) {
 		validateRelativePath(path);
 		try {
 			var request = http.method(method).uri(path).accept(MediaType.APPLICATION_JSON);
 			if (body != null) {
 				request.contentType(MediaType.APPLICATION_JSON).body(body);
 			}
-			return request.exchange((ignored, response) -> readResponse(response, responseType));
+			return request.exchange((ignored, response) -> readResponse(response, responseType, expectedStatus));
 		}
 		catch (ResourceAccessException exception) {
 			if (hasTimeoutCause(exception)) {
@@ -65,10 +73,17 @@ public final class CatedraRestClient {
 	}
 
 	private <T> @Nullable T readResponse(RestClient.RequestHeadersSpec.ConvertibleClientHttpResponse response,
-			Class<T> responseType) throws IOException {
+			Class<T> responseType, @Nullable HttpStatusCode expectedStatus) throws IOException {
 		var status = response.getStatusCode();
 		if (!status.is2xxSuccessful()) {
 			throw new CatedraHttpException(status, problemDetails(response).code());
+		}
+		if (expectedStatus != null) {
+			var contentType = response.getHeaders().getContentType();
+			if (status.value() != expectedStatus.value() || contentType == null
+					|| !MediaType.APPLICATION_JSON.isCompatibleWith(contentType)) {
+				throw new CatedraProtocolException();
+			}
 		}
 		if (responseType == Void.class) {
 			return null;
