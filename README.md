@@ -1,8 +1,8 @@
 # Appointment Reservation Service
 
 Backend de usuarios finales, turnos y reservas para el sistema distribuido de
-Programación 2. Actualmente ofrece registro y autenticación de usuarios; las
-operaciones de disponibilidad y reservas todavía no están disponibles.
+Programación 2. Ofrece registro, autenticación y consulta de disponibilidad de
+turnos. Las operaciones de reserva todavía no están disponibles.
 
 ## Requisitos
 
@@ -82,8 +82,8 @@ habilitado. Distingue `CATALOG_TIMEOUT`, `CATALOG_UNAVAILABLE`, `CATALOG_UNAUTHO
 Los códigos de acceso a Catalog corresponden a la identidad entre servicios.
 Cada invocación vuelve a consultar la fuente; no hay caché ni reemplazo por datos
 históricos. Registro y autenticación de usuarios no dependen de esta consulta.
-La validación está disponible para los casos de uso; los flujos de disponibilidad
-y reservas todavía no están implementados.
+El cálculo de disponibilidad combina esta consulta con las ocupaciones de cátedra;
+no mantiene una réplica propia de horarios ni persiste los slots calculados.
 
 Appointment y Catalog usan la misma cuenta técnica y JWT de cátedra, exclusivamente
 en los backends. `groupId` identifica esa integración, no al usuario final.
@@ -139,6 +139,7 @@ sobrescribas después cargando un placeholder desde `.env`.
 | `GET` / `HEAD /actuator/health` | Público; estado esperado `UP`. |
 | `POST /api/register` | Público; registra un usuario final. |
 | `POST /api/authenticate` | Público; autentica por login y emite un JWT. |
+| `GET /api/appointment-availability` | Protegido; consulta disponibilidad por profesional y fecha. |
 | Resto de `/api/**` | Requiere JWT válido; una ruta no implementada responde 404 tras autenticar. |
 | Otras rutas | Acceso denegado. |
 
@@ -208,6 +209,52 @@ Los errores usan `application/problem+json`. Códigos útiles:
 | Acceso denegado por seguridad | 403 | `ACCESS_DENIED` |
 | Persistencia no disponible al autenticar | 503 | `AUTHENTICATION_UNAVAILABLE` |
 | Fallo interno de registro/login | 500 | `REGISTRATION_FAILED` / `AUTHENTICATION_FAILED` |
+
+### Disponibilidad
+
+Con Catalog disponible y la integración REST de cátedra configurada:
+
+```http
+GET /api/appointment-availability?professionalId=202&date=2026-11-17
+Authorization: Bearer <jwt-usuario-final>
+Accept: application/json
+```
+
+`professionalId` es obligatorio y admite int64 con signo. `date` es obligatoria y
+debe ser una fecha local ISO válida, sin hora ni offset. Los parámetros ausentes o
+mal formados reciben 400 con código `INVALID_REQUEST`; un Bearer ausente o inválido
+recibe 401.
+
+Respuesta de ejemplo, según los horarios y ocupaciones actuales:
+
+```json
+{
+  "professionalId": 202,
+  "date": "2026-11-17",
+  "slots": ["11:30:00", "12:00:00", "12:30:00"]
+}
+```
+
+Responde 200 con `Cache-Control: no-store`; sin horarios disponibles devuelve
+`"slots": []`. KMP utiliza exclusivamente el JWT del usuario final. Las credenciales
+de Catalog y cátedra permanecen en Appointment. La consulta no crea un hold ni
+garantiza que una posición siga libre al intentar reservarla.
+
+Los errores de disponibilidad usan `application/problem+json` y `Cache-Control: no-store`:
+
+| Situación | HTTP | Código |
+| --- | --- | --- |
+| Parámetros ausentes o mal formados | 400 | `INVALID_REQUEST` |
+| JWT de usuario ausente o inválido | 401 | `UNAUTHORIZED` |
+| Profesional inexistente en el catálogo vigente | 404 | `PROFESSIONAL_NOT_FOUND` |
+| Profesional deshabilitado | 409 | `PROFESSIONAL_DISABLED` |
+| No se pudo verificar la respuesta o autenticación de una dependencia | 502 | `AVAILABILITY_DEPENDENCY_ERROR` |
+| Dependencia indisponible | 503 | `AVAILABILITY_UNAVAILABLE` |
+| Timeout al consultar una dependencia | 504 | `AVAILABILITY_TIMEOUT` |
+| Fallo interno inesperado | 500 | `AVAILABILITY_FAILED` |
+
+Un fallo de consulta no devuelve slots ni se transforma en una lista vacía. Los
+problemas de autenticación entre backends no producen un 401 del usuario final.
 
 ## Docker
 

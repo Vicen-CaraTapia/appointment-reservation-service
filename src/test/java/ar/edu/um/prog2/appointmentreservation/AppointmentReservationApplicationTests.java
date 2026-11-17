@@ -1,5 +1,10 @@
 package ar.edu.um.prog2.appointmentreservation;
 
+import java.time.DayOfWeek;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -19,6 +24,12 @@ import org.springframework.test.web.servlet.client.RestTestClient;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.client.CatalogProfessionalClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.dto.CatalogProfessionalResponse;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentOccupanciesClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentOccupanciesResponse;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentOccupanciesResponse.Occupancy;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentOccupanciesResponse.Status;
+import ar.edu.um.prog2.appointmentreservation.availability.application.usecase.CalculateAppointmentAvailabilityUseCase;
 import ar.edu.um.prog2.appointmentreservation.integration.catalog.infrastructure.rest.exception.CatalogClientException;
 import ar.edu.um.prog2.appointmentreservation.professional.application.exception.ProfessionalLookupException;
 import ar.edu.um.prog2.appointmentreservation.professional.application.usecase.LoadEnabledProfessionalUseCase;
@@ -55,6 +66,9 @@ class AppointmentReservationApplicationTests {
 	@MockitoBean
 	private CatalogProfessionalClient catalogClient;
 
+	@MockitoBean
+	private CatedraAppointmentOccupanciesClient occupancyClient;
+
 	@DynamicPropertySource
 	static void signingKey(DynamicPropertyRegistry registry) {
 		registry.add(FinalUserJwtTestSupport.SECRET_PROPERTY, FinalUserJwtTestSupport::signingSecret);
@@ -68,6 +82,25 @@ class AppointmentReservationApplicationTests {
 				.expectStatus().isOk()
 				.expectBody()
 				.jsonPath("$.status").isEqualTo("UP");
+	}
+
+	@Test
+	void availabilityUsesTheWiredApplicationAndAdaptersWithoutExternalInfrastructure(
+			@Autowired CalculateAppointmentAvailabilityUseCase availability) {
+		var date = LocalDate.of(2026, 9, 14);
+		when(catalogClient.getProfessional(201)).thenReturn(new CatalogProfessionalResponse(201, "Ana", "Torres", true,
+				new CatalogProfessionalResponse.Category(101, "Cardiologia", true), List.of(
+						new CatalogProfessionalResponse.WeeklySchedule(301, DayOfWeek.MONDAY,
+								LocalTime.of(9, 0), LocalTime.NOON, 30, true))));
+		when(occupancyClient.getOccupancies(201, date, date)).thenReturn(
+				new CatedraAppointmentOccupanciesResponse(201, date, date, List.of(
+						new Occupancy(date, LocalTime.of(9, 0), Status.CONFIRMED, null),
+						new Occupancy(date, LocalTime.of(10, 30), Status.HELD, Instant.EPOCH))));
+		assertThat(availability.calculate(201, date)).containsExactly(
+				LocalTime.of(9, 30), LocalTime.of(10, 0), LocalTime.of(11, 0), LocalTime.of(11, 30));
+		verify(catalogClient).getProfessional(201);
+		verify(occupancyClient).getOccupancies(201, date, date);
+		verifyNoMoreInteractions(catalogClient, occupancyClient);
 	}
 
 	@Test
