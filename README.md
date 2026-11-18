@@ -96,8 +96,10 @@ El cliente backend de holds utiliza `POST /api/appointment-holds` con el JWT té
 y exige `201 Created` con los identificadores, estado `HELD` y vencimiento remoto.
 Los rechazos funcionales se distinguen por status y code, nunca por `detail`.
 No reintenta automáticamente: un timeout o una respuesta inválida pueden dejar
-incierto el resultado remoto. Este cliente todavía no expone una ruta pública
-para iniciar reservas ni persiste el hold.
+incierto el resultado remoto. El caso de uso de inicio requiere un usuario final
+autenticado y una agenda vigente válida; tras un hold exitoso guarda el proceso
+en `HELD` asociado a ese usuario. Un fallo de guardado local no cancela el hold
+remoto. Todavía no existe una ruta HTTP pública para iniciar ese flujo.
 
 La configuración Kafka prepara las factories y el template, sin registrar listeners,
 consumir, publicar ni crear topics. El arranque y el health check no verifican la

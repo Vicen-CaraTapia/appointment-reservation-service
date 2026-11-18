@@ -24,9 +24,21 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.ExternalPatientId;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationPersistenceException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.ReservationProcessJpaRepository;
@@ -35,15 +47,34 @@ import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupp
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.UserEntity;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.repository.UserJpaRepository;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentHoldClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentHoldRequest;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentHoldResponse;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.exception.CatedraTimeoutException;
+import ar.edu.um.prog2.appointmentreservation.professional.application.model.CurrentProfessional;
+import ar.edu.um.prog2.appointmentreservation.professional.application.port.out.CurrentProfessionalSource;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.HoldRequestException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationAuthenticationRequiredException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.StartReservationProcessUseCase;
+import ar.edu.um.prog2.appointmentreservation.user.application.model.RegisterUserCommand;
+import ar.edu.um.prog2.appointmentreservation.user.application.port.out.FinalUserAuthenticator;
+import ar.edu.um.prog2.appointmentreservation.user.application.usecase.RegisterUserUseCase;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 class ReservationProcessPersistenceIT {
 
 	private static final LocalDate DATE = LocalDate.of(2026, 11, 17);
 	private static final LocalTime TIME = LocalTime.of(11, 30, 0, 123456000);
 	private static final Instant EXPIRY = Instant.parse("2026-11-17T14:40:00.123456Z");
+	private static final String WORKFLOW_PASSWORD = "test-only-workflow-passphrase";
 	private String url;
 	private String username;
 	private String password;
@@ -81,6 +112,7 @@ class ReservationProcessPersistenceIT {
 				"spring.jpa.properties.hibernate.default_schema", schema,
 				"spring.jpa.hibernate.ddl-auto", "validate");
 		context = new SpringApplicationBuilder(AppointmentReservationApplication.class)
+				.sources(ReservationWorkflowDependencies.class)
 				.initializers(CatedraIntegrationTestSupport::configure, CatalogIntegrationTestSupport::configure)
 				.web(WebApplicationType.NONE)
 				.initializers(application -> application.getEnvironment().getPropertySources().addFirst(
@@ -95,6 +127,7 @@ class ReservationProcessPersistenceIT {
 
 	@AfterEach
 	void closeAndRemoveOnlyThisTestSchema() throws SQLException {
+		SecurityContextHolder.clearContext();
 		try {
 			if (context != null) {
 				context.close();
@@ -106,6 +139,206 @@ class ReservationProcessPersistenceIT {
 				}
 			}
 		}
+	}
+
+	@Test
+	void wiredWorkflowAuthenticatesRechecksCatalogAndCommitsTheOwnedHoldWithoutARemoteTransaction() {
+		authenticateWorkflowUser();
+		var catalog = context.getBean(CurrentProfessionalSource.class);
+		var holdClient = context.getBean(CatedraAppointmentHoldClient.class);
+		when(catalog.load(202)).thenAnswer(call -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			return workflowProfessional();
+		});
+		when(holdClient.createHold(any())).thenAnswer(call -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			return workflowHold();
+		});
+		var result = context.getBean(StartReservationProcessUseCase.class).start(workflowSelection());
+		var stored = processes.findByIdAndOwner_Id(result.id(), owner.getId()).orElseThrow();
+		assertThat(stored.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(stored.getExternalPatientId()).isEqualTo("user-" + owner.getId());
+		assertThat(stored.getProfessionalId()).isEqualTo(202);
+		assertThat(stored.getAppointmentDate()).isEqualTo(DATE);
+		assertThat(stored.getStartTime()).isEqualTo(LocalTime.of(11, 30));
+		assertThat(stored.getHoldId()).isEqualTo("hold-workflow");
+		assertThat(stored.getExternalReservationProcessId()).isEqualTo("process-workflow");
+		assertThat(stored.getExpiresAt()).isEqualTo(EXPIRY);
+		assertThat(stored.getCreatedBy()).isEqualTo("workflowuser");
+		assertThat(stored.getCreatedDate()).isNotNull();
+		assertThat(result.hold().expiresAt()).isEqualTo(EXPIRY);
+		assertThat(processes.count()).isEqualTo(1);
+		assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+		verify(catalog).load(202);
+		verify(holdClient).createHold(new CatedraAppointmentHoldRequest(202, DATE, LocalTime.of(11, 30),
+				"user-" + owner.getId()));
+		verifyNoMoreInteractions(catalog, holdClient);
+	}
+
+	@Test
+	void wiredWorkflowDoesNotCreateLocalStateOrRetryAfterAnAmbiguousRemoteTimeout() {
+		authenticateWorkflowUser();
+		var catalog = context.getBean(CurrentProfessionalSource.class);
+		var holdClient = context.getBean(CatedraAppointmentHoldClient.class);
+		when(catalog.load(202)).thenReturn(workflowProfessional());
+		when(holdClient.createHold(any())).thenThrow(new CatedraTimeoutException());
+		assertThatThrownBy(() -> context.getBean(StartReservationProcessUseCase.class).start(workflowSelection()))
+				.isInstanceOfSatisfying(HoldRequestException.class, failure -> {
+					assertThat(failure.reason()).isEqualTo(HoldRequestException.Reason.TIMEOUT);
+					assertThat(failure).hasNoCause();
+				});
+		assertThat(processes.count()).isZero();
+		verify(holdClient).createHold(any());
+		verifyNoMoreInteractions(holdClient);
+	}
+
+	@Test
+	void wiredWorkflowReportsLocalFailureAfterRemoteSuccessWithoutRepeatingTheHold() {
+		authenticateWorkflowUser();
+		var catalog = context.getBean(CurrentProfessionalSource.class);
+		var holdClient = context.getBean(CatedraAppointmentHoldClient.class);
+		when(catalog.load(202)).thenReturn(workflowProfessional());
+		when(holdClient.createHold(any())).thenAnswer(call -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			// Simulate owner deletion between authentication and local persistence, after remote acceptance.
+			users.deleteById(owner.getId());
+			return workflowHold();
+		});
+		assertThatThrownBy(() -> context.getBean(StartReservationProcessUseCase.class).start(workflowSelection()))
+				.isInstanceOf(ReservationPersistenceException.class).hasNoCause();
+		assertThat(processes.count()).isZero();
+		verify(holdClient).createHold(any());
+		verifyNoMoreInteractions(holdClient);
+	}
+
+	@Test
+	void wiredWorkflowRejectsAnAbsentSecurityIdentityBeforeExternalWorkOrLocalWrites() {
+		SecurityContextHolder.clearContext();
+		assertThatThrownBy(() -> context.getBean(StartReservationProcessUseCase.class).start(workflowSelection()))
+				.isInstanceOf(ReservationAuthenticationRequiredException.class);
+		verifyNoInteractions(context.getBean(CurrentProfessionalSource.class), context.getBean(CatedraAppointmentHoldClient.class));
+		assertThat(processes.count()).isZero();
+	}
+
+	private void authenticateWorkflowUser() {
+		context.getBean(RegisterUserUseCase.class).register(new RegisterUserCommand("workflowuser", WORKFLOW_PASSWORD,
+				null, null, "workflow@example.test", null, "es"));
+		owner = users.findByLoginIgnoreCase("workflowuser").orElseThrow();
+		var token = context.getBean(FinalUserAuthenticator.class).authenticate("WORKFLOWUSER", WORKFLOW_PASSWORD, false);
+		var jwt = context.getBean(JwtDecoder.class).decode(token.value());
+		var authentication = new JwtAuthenticationConverter().convert(jwt);
+		var securityContext = SecurityContextHolder.createEmptyContext();
+		securityContext.setAuthentication(authentication);
+		SecurityContextHolder.setContext(securityContext);
+	}
+
+	private static StartReservationCommand workflowSelection() {
+		return new StartReservationCommand(202, DATE, LocalTime.of(11, 30));
+	}
+
+	private static CurrentProfessional workflowProfessional() {
+		return new CurrentProfessional(202, "Martin", "Rivas", true,
+				new CurrentProfessional.Category(101, "Cardiologia", true),
+				List.of(new CurrentProfessional.WeeklySchedule(303, DATE.getDayOfWeek(),
+						LocalTime.of(11, 30), LocalTime.of(14, 30), 30, true)));
+	}
+
+	private static CatedraAppointmentHoldResponse workflowHold() {
+		return new CatedraAppointmentHoldResponse("hold-workflow", "process-workflow", "HELD", EXPIRY);
+	}
+
+	@TestConfiguration(proxyBeanMethods = false)
+	static class ReservationWorkflowDependencies {
+		@Bean
+		@Primary
+		CurrentProfessionalSource controlledWorkflowCatalog() {
+			return mock(CurrentProfessionalSource.class);
+		}
+
+		@Bean
+		@Primary
+		CatedraAppointmentHoldClient controlledWorkflowHoldClient() {
+			return mock(CatedraAppointmentHoldClient.class);
+		}
+	}
+
+	@Test
+	void applicationStoreCommitsACompleteHeldProcessOwnedAndAuditedByTheAuthenticatedUser() {
+		var input = new AppointmentHold("hold-store-" + "x".repeat(300), "process-store-" + "y".repeat(300), EXPIRY);
+		var result = store().createHeld(identity(owner), selection(), input);
+		var saved = processes.findByIdAndOwner_Id(result.id(), owner.getId()).orElseThrow();
+		assertThat(result.id()).isPositive();
+		assertThat(result.hold()).isEqualTo(input);
+		assertThat(saved.getOwner().getId()).isEqualTo(owner.getId());
+		assertThat(saved.getExternalPatientId()).isEqualTo("user-" + owner.getId());
+		assertThat(saved.getProfessionalId()).isEqualTo(Long.MAX_VALUE);
+		assertThat(saved.getAppointmentDate()).isEqualTo(DATE);
+		assertThat(saved.getStartTime()).isEqualTo(TIME);
+		assertThat(saved.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(saved.getHoldId()).isEqualTo(input.holdId());
+		assertThat(saved.getExternalReservationProcessId()).isEqualTo(input.reservationProcessId());
+		assertThat(saved.getExpiresAt()).isEqualTo(EXPIRY);
+		assertThat(saved.getCreatedBy()).isEqualTo(owner.getLogin());
+		assertThat(saved.getCreatedDate()).isNotNull();
+		assertThat(saved.getLastModifiedBy()).isNull();
+		assertThat(saved.getLastModifiedDate()).isNull();
+		assertThat(processes.count()).isEqualTo(1);
+	}
+
+	@Test
+	void applicationStoreNeverRoundsNanosecondExpiryUpWhenPostgresStoresMicroseconds() {
+		var remote = new AppointmentHold("hold-nanos", "process-nanos", Instant.parse("2026-11-17T22:28:18.514830573Z"));
+		var result = store().createHeld(identity(owner), selection(), remote);
+		var saved = processes.findById(result.id()).orElseThrow();
+		assertThat(saved.getExpiresAt()).isEqualTo(Instant.parse("2026-11-17T22:28:18.514830Z"))
+				.isBeforeOrEqualTo(remote.expiresAt());
+		assertThat(result.hold().expiresAt()).isEqualTo(saved.getExpiresAt());
+	}
+
+	@Test
+	void applicationStoreRollsBackAnAbsentOwnerWithoutExposingSqlDiagnostics() {
+		var absent = new AuthenticatedReservationUser(Long.MAX_VALUE, "absent-user");
+		assertThatThrownBy(() -> store().createHeld(absent, selection(), new AppointmentHold("hold-absent", "process-absent", EXPIRY)))
+				.isInstanceOf(ReservationPersistenceException.class)
+				.hasMessage("Reservation process could not be persisted; the remote hold may still exist").hasNoCause();
+		assertThat(processes.count()).isZero();
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"hold", "external-process"})
+	void applicationStoreRollsBackDuplicateExternalIdsWithoutLeavingAPendingProcess(String duplicate) {
+		var first = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-first", "process-first", EXPIRY));
+		var repeated = new AppointmentHold(duplicate.equals("hold") ? "hold-first" : "hold-second",
+				duplicate.equals("external-process") ? "process-first" : "process-second", EXPIRY);
+		assertThatThrownBy(() -> store().createHeld(identity(owner), selection(), repeated))
+				.isInstanceOf(ReservationPersistenceException.class).hasNoCause();
+		assertThat(processes.count()).isEqualTo(1);
+		assertThat(processes.findById(first.id()).orElseThrow().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	@Test
+	void applicationStoreDerivesPatientIdentityFromEachOwnerAndPreservesOwnershipScopedLookup() {
+		var other = users.saveAndFlush(new UserEntity("bob", owner.getPasswordHash(), null, null,
+				"bob@example.test", null, "es", "backend-test"));
+		var first = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-alice", "process-alice", EXPIRY));
+		var second = store().createHeld(identity(other), selection(), new AppointmentHold("hold-bob", "process-bob", EXPIRY));
+		assertThat(processes.findByIdAndOwner_Id(first.id(), other.getId())).isEmpty();
+		var saved = processes.findByIdAndOwner_Id(second.id(), other.getId()).orElseThrow();
+		assertThat(saved.getExternalPatientId()).isEqualTo("user-" + other.getId());
+		assertThat(saved.getCreatedBy()).isEqualTo("bob");
+		assertThat(processes.count()).isEqualTo(2);
+	}
+
+	private ReservationProcessStore store() {
+		return context.getBean(ReservationProcessStore.class);
+	}
+
+	private static AuthenticatedReservationUser identity(UserEntity user) {
+		return new AuthenticatedReservationUser(user.getId(), user.getLogin());
+	}
+
+	private static StartReservationCommand selection() {
+		return new StartReservationCommand(Long.MAX_VALUE, DATE, TIME);
 	}
 
 	@Test
