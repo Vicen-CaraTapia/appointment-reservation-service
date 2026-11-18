@@ -27,6 +27,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.ExternalPatientId;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationPersistenceException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.ReservationProcessJpaRepository;
@@ -106,6 +111,85 @@ class ReservationProcessPersistenceIT {
 				}
 			}
 		}
+	}
+
+	@Test
+	void applicationStoreCommitsACompleteHeldProcessOwnedAndAuditedByTheAuthenticatedUser() {
+		var input = new AppointmentHold("hold-store-" + "x".repeat(300), "process-store-" + "y".repeat(300), EXPIRY);
+		var result = store().createHeld(identity(owner), selection(), input);
+		var saved = processes.findByIdAndOwner_Id(result.id(), owner.getId()).orElseThrow();
+		assertThat(result.id()).isPositive();
+		assertThat(result.hold()).isEqualTo(input);
+		assertThat(saved.getOwner().getId()).isEqualTo(owner.getId());
+		assertThat(saved.getExternalPatientId()).isEqualTo("user-" + owner.getId());
+		assertThat(saved.getProfessionalId()).isEqualTo(Long.MAX_VALUE);
+		assertThat(saved.getAppointmentDate()).isEqualTo(DATE);
+		assertThat(saved.getStartTime()).isEqualTo(TIME);
+		assertThat(saved.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(saved.getHoldId()).isEqualTo(input.holdId());
+		assertThat(saved.getExternalReservationProcessId()).isEqualTo(input.reservationProcessId());
+		assertThat(saved.getExpiresAt()).isEqualTo(EXPIRY);
+		assertThat(saved.getCreatedBy()).isEqualTo(owner.getLogin());
+		assertThat(saved.getCreatedDate()).isNotNull();
+		assertThat(saved.getLastModifiedBy()).isNull();
+		assertThat(saved.getLastModifiedDate()).isNull();
+		assertThat(processes.count()).isEqualTo(1);
+	}
+
+	@Test
+	void applicationStoreNeverRoundsNanosecondExpiryUpWhenPostgresStoresMicroseconds() {
+		var remote = new AppointmentHold("hold-nanos", "process-nanos", Instant.parse("2026-11-17T22:28:18.514830573Z"));
+		var result = store().createHeld(identity(owner), selection(), remote);
+		var saved = processes.findById(result.id()).orElseThrow();
+		assertThat(saved.getExpiresAt()).isEqualTo(Instant.parse("2026-11-17T22:28:18.514830Z"))
+				.isBeforeOrEqualTo(remote.expiresAt());
+		assertThat(result.hold().expiresAt()).isEqualTo(saved.getExpiresAt());
+	}
+
+	@Test
+	void applicationStoreRollsBackAnAbsentOwnerWithoutExposingSqlDiagnostics() {
+		var absent = new AuthenticatedReservationUser(Long.MAX_VALUE, "absent-user");
+		assertThatThrownBy(() -> store().createHeld(absent, selection(), new AppointmentHold("hold-absent", "process-absent", EXPIRY)))
+				.isInstanceOf(ReservationPersistenceException.class)
+				.hasMessage("Reservation process could not be persisted; the remote hold may still exist").hasNoCause();
+		assertThat(processes.count()).isZero();
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"hold", "external-process"})
+	void applicationStoreRollsBackDuplicateExternalIdsWithoutLeavingAPendingProcess(String duplicate) {
+		var first = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-first", "process-first", EXPIRY));
+		var repeated = new AppointmentHold(duplicate.equals("hold") ? "hold-first" : "hold-second",
+				duplicate.equals("external-process") ? "process-first" : "process-second", EXPIRY);
+		assertThatThrownBy(() -> store().createHeld(identity(owner), selection(), repeated))
+				.isInstanceOf(ReservationPersistenceException.class).hasNoCause();
+		assertThat(processes.count()).isEqualTo(1);
+		assertThat(processes.findById(first.id()).orElseThrow().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	@Test
+	void applicationStoreDerivesPatientIdentityFromEachOwnerAndPreservesOwnershipScopedLookup() {
+		var other = users.saveAndFlush(new UserEntity("bob", owner.getPasswordHash(), null, null,
+				"bob@example.test", null, "es", "backend-test"));
+		var first = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-alice", "process-alice", EXPIRY));
+		var second = store().createHeld(identity(other), selection(), new AppointmentHold("hold-bob", "process-bob", EXPIRY));
+		assertThat(processes.findByIdAndOwner_Id(first.id(), other.getId())).isEmpty();
+		var saved = processes.findByIdAndOwner_Id(second.id(), other.getId()).orElseThrow();
+		assertThat(saved.getExternalPatientId()).isEqualTo("user-" + other.getId());
+		assertThat(saved.getCreatedBy()).isEqualTo("bob");
+		assertThat(processes.count()).isEqualTo(2);
+	}
+
+	private ReservationProcessStore store() {
+		return context.getBean(ReservationProcessStore.class);
+	}
+
+	private static AuthenticatedReservationUser identity(UserEntity user) {
+		return new AuthenticatedReservationUser(user.getId(), user.getLogin());
+	}
+
+	private static StartReservationCommand selection() {
+		return new StartReservationCommand(Long.MAX_VALUE, DATE, TIME);
 	}
 
 	@Test
