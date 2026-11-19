@@ -85,7 +85,26 @@ nombres, estado, vencimiento, auditoría y versión juntos.
 
 La versión detecta escrituras sobre una observación obsoleta y evita que otra
 confirmación sobrescriba silenciosamente la primera. No evita por sí sola dos
-llamadas REST concurrentes ni revierte efectos externos. El puerto/adaptador de
-confirmación, los resultados inciertos y la coordinación REST se implementarán
-en los siguientes incrementos/Issues; este cambio no ejecuta confirmaciones,
-no implementa Kafka ni agrega estados futuros de recuperación.
+llamadas REST concurrentes ni revierte efectos externos. Las operaciones del
+puerto/adaptador se describen abajo. La representación de resultados inciertos
+y la coordinación REST se resolverán en A7.3; este cambio no ejecuta
+confirmaciones remotas, no implementa Kafka ni agrega estados futuros de recuperación.
+
+### Acceso desde aplicación y guardado de la aceptación (A7.1)
+
+`ReservationProcessStore.findOwned` consulta por ID local y usuario autenticado,
+en una transacción de lectura, y devuelve una observación inmutable con un token
+de versión. Un ID inexistente y uno ajeno producen el mismo resultado vacío.
+No se devuelve una entidad JPA ni se conserva una transacción para llamadas remotas.
+
+`recordInitialConfirmation` vuelve a comprobar propietario, versión, estado
+`HELD` e ID del proceso externo antes de registrar la aceptación. El vencimiento
+es el recibido en la confirmación, con la precisión conservadora descrita arriba.
+El resultado se entrega después del commit local. Una actualización obsoleta o
+incompatible se diferencia de un fallo de almacenamiento, incluso si falla el
+commit después del flush; las excepciones públicas de aplicación omiten causas
+SQL y datos del paciente. Los modelos con datos personales redactan `toString()`.
+
+Este puerto no realiza la confirmación REST. Un conflicto local después de una
+aceptación remota no demuestra un fracaso remoto ni autoriza repetir el POST;
+la coordinación y la incertidumbre siguen siendo responsabilidad de A7.3.
