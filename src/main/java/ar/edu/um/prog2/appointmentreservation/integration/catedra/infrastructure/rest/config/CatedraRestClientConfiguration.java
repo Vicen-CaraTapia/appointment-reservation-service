@@ -13,6 +13,7 @@ import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraRestClient;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentOccupanciesClient;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentHoldClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentHoldConfirmationClient;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.adapter.CatedraCurrentOccupancyAdapter;
 import ar.edu.um.prog2.appointmentreservation.availability.application.port.out.CurrentOccupancySource;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.adapter.CatedraAppointmentHoldAdapter;
@@ -20,6 +21,11 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.A
 
 @Configuration(proxyBeanMethods = false)
 public class CatedraRestClientConfiguration {
+
+	@Bean
+	public CatedraAppointmentHoldConfirmationClient catedraAppointmentHoldConfirmationClient(CatedraRestClient rest) {
+		return new CatedraAppointmentHoldConfirmationClient(rest);
+	}
 
 	@Bean
 	public AppointmentHoldRequester appointmentHoldRequester(CatedraAppointmentHoldClient client) {
