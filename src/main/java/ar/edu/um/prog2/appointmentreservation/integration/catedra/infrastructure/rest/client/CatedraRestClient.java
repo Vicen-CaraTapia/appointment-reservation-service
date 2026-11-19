@@ -15,6 +15,7 @@ import org.springframework.http.converter.HttpMessageConversionException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.ObjectMapper;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraProblemDetails;
@@ -47,11 +48,24 @@ public final class CatedraRestClient {
 		return exchange(HttpMethod.POST, relativePath, body, responseType, HttpStatus.CREATED);
 	}
 
+	/** Requires 202 with JSON; the relative path is already encoded by the endpoint client. */
+	public <T> @Nullable T postAccepted(String encodedRelativePath, Object body, Class<T> responseType) {
+		return exchange(HttpMethod.POST, encodedRelativePath, body, responseType, HttpStatus.ACCEPTED, true);
+	}
+
 	private <T> @Nullable T exchange(HttpMethod method, String path, @Nullable Object body, Class<T> responseType,
 			@Nullable HttpStatusCode expectedStatus) {
+		return exchange(method, path, body, responseType, expectedStatus, false);
+	}
+
+	private <T> @Nullable T exchange(HttpMethod method, String path, @Nullable Object body, Class<T> responseType,
+			@Nullable HttpStatusCode expectedStatus, boolean encodedPath) {
 		validateRelativePath(path);
 		try {
-			var request = http.method(method).uri(path).accept(MediaType.APPLICATION_JSON);
+			var target = http.method(method);
+			var request = (encodedPath
+					? target.uri(builder -> UriComponentsBuilder.fromUri(builder.build()).path(path).build(true).toUri())
+					: target.uri(path)).accept(MediaType.APPLICATION_JSON);
 			if (body != null) {
 				request.contentType(MediaType.APPLICATION_JSON).body(body);
 			}
