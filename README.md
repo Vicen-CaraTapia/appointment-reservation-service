@@ -92,6 +92,15 @@ calcules a partir de `groupId`. Los dos timeouts son obligatorios, positivos y
 aceptan formatos como `5s` y `30s`. La URL REST debe ser HTTP(S) absoluta, sin
 credenciales embebidas, query ni fragmento; admite un prefijo de ruta.
 
+El cliente backend de holds utiliza `POST /api/appointment-holds` con el JWT técnico
+y exige `201 Created` con los identificadores, estado `HELD` y vencimiento remoto.
+Los rechazos funcionales se distinguen por status y code, nunca por `detail`.
+No reintenta automáticamente: un timeout o una respuesta inválida pueden dejar
+incierto el resultado remoto. El caso de uso de inicio requiere un usuario final
+autenticado y una agenda vigente válida; tras un hold exitoso guarda el proceso
+en `HELD` asociado a ese usuario. Un fallo de guardado local no cancela el hold
+remoto. La API para KMP es `POST /api/reservation-processes`.
+
 La configuración Kafka prepara las factories y el template, sin registrar listeners,
 consumir, publicar ni crear topics. El arranque y el health check no verifican la
 conectividad con el broker.
@@ -255,6 +264,52 @@ Los errores de disponibilidad usan `application/problem+json` y `Cache-Control: 
 
 Un fallo de consulta no devuelve slots ni se transforma en una lista vacía. Los
 problemas de autenticación entre backends no producen un 401 del usuario final.
+
+### Iniciar un proceso de reserva
+
+Elegí un slot de la consulta de disponibilidad y enviá una única solicitud:
+
+```http
+POST /api/reservation-processes
+Authorization: Bearer <jwt-usuario-final>
+Content-Type: application/json
+
+{"professionalId":202,"date":"2026-11-19","startTime":"18:00"}
+```
+
+Reemplazá los valores de ejemplo por un profesional, fecha y horario vigentes.
+Los tres campos son obligatorios: ID numérico int64 y strings ISO de fecha y hora
+locales, sin offset. Los campos adicionales se rechazan; el propietario y
+`externalPatientId` los determina el backend desde el usuario autenticado.
+
+Respuesta `201 Created`, con `Cache-Control: no-store`:
+
+```json
+{"id":123,"status":"HELD","expiresAt":"2026-11-18T17:30:00Z"}
+```
+
+`id` identifica el proceso local. `expiresAt` es el vencimiento remoto del hold,
+no la fecha del turno. `HELD` representa un bloqueo temporal, no una reserva confirmada.
+
+Los errores usan `application/problem+json`, un `code` estable y `Cache-Control: no-store`:
+
+| Situación | HTTP | Código |
+| --- | --- | --- |
+| Campos obligatorios ausentes/nulos o JSON inválido/no soportado | 400 | `VALIDATION_ERROR` / `INVALID_REQUEST` |
+| Profesional deshabilitado u horario fuera de agenda | 400 | `PROFESSIONAL_DISABLED` / `INVALID_SLOT` |
+| JWT de usuario ausente o inválido | 401 | `UNAUTHORIZED` |
+| Profesional inexistente | 404 | `PROFESSIONAL_NOT_FOUND` |
+| Otra reserva o hold ocupó el slot | 409 | `SLOT_ALREADY_RESERVED` / `SLOT_ALREADY_HELD` |
+| Fallo de dependencia antes de solicitar el hold | 502/503/504 | `RESERVATION_DEPENDENCY_ERROR` / `RESERVATION_DEPENDENCY_UNAVAILABLE` / `RESERVATION_DEPENDENCY_TIMEOUT` |
+| Credenciales técnicas o rechazo no reconocido de una dependencia | 502 | `RESERVATION_DEPENDENCY_ERROR` |
+| Resultado remoto incierto al solicitar el hold | 502/503/504 | `HOLD_OUTCOME_UNKNOWN` |
+| Fallo de guardado local después del hold | 500 | `RESERVATION_PERSISTENCE_FAILED` |
+| Error interno inesperado | 500 | `RESERVATION_START_FAILED` |
+
+Decidí por status y code, no por `detail`. Ante un resultado incierto o un fallo
+de persistencia, el hold puede existir: no repitas automáticamente el POST.
+Las credenciales técnicas nunca se devuelven a KMP; un problema de autenticación
+entre backends no requiere renovar el JWT del usuario final.
 
 ## Docker
 

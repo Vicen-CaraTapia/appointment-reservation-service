@@ -92,6 +92,13 @@ class CatedraRestClientTest {
 	}
 
 	@ParameterizedTest
+	@ValueSource(ints = {200, 202, 207})
+	void genericPostStillAcceptsOtherSuccessfulStatuses(int status) throws IOException {
+		var client = start(exchange -> respond(exchange, status, "application/json", "{\"value\":\"ok\"}"));
+		assertThat(client.post("/probe", new Probe("request"), Probe.class)).isEqualTo(new Probe("ok"));
+	}
+
+	@ParameterizedTest
 	@ValueSource(ints = {400, 401, 403, 404, 409, 500, 503})
 	void preservesTheRealHttpStatusAndStableCodeWithoutUsingDetail(int status) throws IOException {
 		var requests = new AtomicInteger();

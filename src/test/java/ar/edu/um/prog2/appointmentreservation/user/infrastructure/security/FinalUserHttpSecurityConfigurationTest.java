@@ -52,12 +52,14 @@ import ar.edu.um.prog2.appointmentreservation.user.application.model.RegisteredU
 import ar.edu.um.prog2.appointmentreservation.user.application.usecase.RegisterUserUseCase;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.web.UserRegistrationController;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.CurrentReservationUser;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.security.SpringCurrentReservationUser;
 
 @WebMvcTest(controllers = UserRegistrationController.class,
 		excludeAutoConfiguration = UserDetailsServiceAutoConfiguration.class,
 		properties = "appointment.cors.allowed-origins=https://app.example.test")
 @Import({FinalUserHttpSecurityConfiguration.class, FinalUserHttpSecurityConfigurationTest.JwtTestConfiguration.class,
-		FinalUserHttpSecurityConfigurationTest.IdentityProbe.class})
+		FinalUserHttpSecurityConfigurationTest.IdentityProbe.class, SpringCurrentReservationUser.class})
 class FinalUserHttpSecurityConfigurationTest {
 	private static final String SECRET = FinalUserJwtTestSupport.generateSecret();
 
@@ -129,6 +131,19 @@ class FinalUserHttpSecurityConfigurationTest {
 				.andExpect(result -> assertThat(result.getRequest().getSession(false)).isNull());
 		assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
 		mvc.perform(get("/api/test/identity")).andExpect(status().isUnauthorized());
+	}
+
+	@Test
+	void reservationIdentityComesFromARealValidatedBearerAndIgnoresCallerSuppliedOwnership() throws Exception {
+		mvc.perform(get("/api/test/reservation-identity")
+				.param("userId", "999").param("login", "attacker").param("externalPatientId", "user-999")
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + token(SECRET, Clock.systemUTC())))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.userId").value(42))
+				.andExpect(jsonPath("$.login").value("alice"))
+				.andExpect(result -> assertThat(result.getRequest().getSession(false)).isNull());
+		mvc.perform(get("/api/test/reservation-identity")).andExpect(status().isUnauthorized());
+		assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
 	}
 
 	@Test
@@ -225,6 +240,18 @@ class FinalUserHttpSecurityConfigurationTest {
 	@RestController
 	@TestComponent
 	static class IdentityProbe {
+		private final CurrentReservationUser currentReservationUser;
+
+		IdentityProbe(CurrentReservationUser currentReservationUser) {
+			this.currentReservationUser = currentReservationUser;
+		}
+
+		@GetMapping("/api/test/reservation-identity")
+		Map<String, Object> reservationIdentity() {
+			var user = currentReservationUser.requireAuthenticated();
+			return Map.of("userId", user.userId(), "login", user.login());
+		}
+
 		@GetMapping("/api/test/identity")
 		Map<String, Object> identity(@AuthenticationPrincipal Jwt jwt, Authentication authentication) {
 			return Map.of("login", jwt.getSubject(), "userId", ((Number) jwt.getClaim("userId")).longValue(),

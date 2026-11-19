@@ -162,6 +162,7 @@
 									<includes>
 										<include>**/FlywayMigrationIT.java</include>
 										<include>**/UserPersistenceIT.java</include>
+										<include>**/ReservationProcessPersistenceIT.java</include>
 										<include>**/UserRegistrationIT.java</include>
 										<include>**/UserRegistrationHttpIT.java</include>
 										<include>**/FinalUserAuthenticationHttpIT.java</include>
