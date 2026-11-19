@@ -21,6 +21,7 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -342,9 +343,9 @@ class ReservationProcessPersistenceIT {
 	}
 
 	@Test
-	void appliesV2AfterAnExistingV1AndDoesNotReapplyEitherMigration() {
+	void appliesV2AndV3AfterAnExistingV1WithoutReapplyingMigrations() {
 		var flyway = context.getBean(Flyway.class);
-		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2");
+		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3");
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 
@@ -497,6 +498,103 @@ class ReservationProcessPersistenceIT {
 		assertThat(loaded.getStatus()).isEqualTo(ReservationProcessStatus.PENDING_HOLD);
 		assertThat(loaded.getHoldId()).isNull();
 		assertThat(loaded.getLastModifiedDate()).isNull();
+	}
+
+	@Test
+	void persistsInitialConfirmationAndAuditWithoutChangingOwnershipOrExternalIdentity() {
+		var held = pending(owner);
+		held.markHeld("hold-confirm", "process-confirm", EXPIRY, "actor");
+		var saved = processes.saveAndFlush(held);
+		var initialVersion = saved.getVersion();
+		var created = processes.findById(saved.getId()).orElseThrow().getCreatedDate();
+		transactions.executeWithoutResult(status -> {
+			var process = processes.findByIdAndOwner_Id(saved.getId(), owner.getId()).orElseThrow();
+			process.markWaitingForPhone("Ana", "Perez", EXPIRY.plusNanos(789), "confirmation-adapter");
+			processes.flush();
+		});
+		var actual = processes.findById(saved.getId()).orElseThrow();
+		assertThat(actual.getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(actual.getPatientFirstName()).isEqualTo("Ana");
+		assertThat(actual.getPatientLastName()).isEqualTo("Perez");
+		assertThat(actual.getExpiresAt()).isEqualTo(EXPIRY);
+		assertThat(actual.getHoldId()).isEqualTo("hold-confirm");
+		assertThat(actual.getExternalReservationProcessId()).isEqualTo("process-confirm");
+		assertThat(actual.getOwner().getId()).isEqualTo(owner.getId());
+		assertThat(actual.getExternalPatientId()).isEqualTo(ExternalPatientId.fromUserId(owner.getId()));
+		assertThat(actual.getCreatedDate()).isEqualTo(created);
+		assertThat(actual.getCreatedBy()).isEqualTo("backend-test");
+		assertThat(actual.getLastModifiedBy()).isEqualTo("confirmation-adapter");
+		assertThat(actual.getLastModifiedDate()).isAfterOrEqualTo(created);
+		assertThat(actual.getVersion()).isEqualTo(initialVersion + 1);
+	}
+
+	@Test
+	void rejectsAStaleConcurrentConfirmationWithoutOverwritingTheWinner() {
+		var held = pending(owner);
+		held.markHeld("hold-concurrent", "process-concurrent", EXPIRY, "actor");
+		long id = processes.saveAndFlush(held).getId();
+		// Two independent persistence contexts observed the same committed version.
+		var first = processes.findById(id).orElseThrow();
+		var stale = processes.findById(id).orElseThrow();
+		assertThat(stale.getVersion()).isEqualTo(first.getVersion());
+		first.markWaitingForPhone("Ana", "Perez", EXPIRY, "winner");
+		processes.saveAndFlush(first);
+		stale.markWaitingForPhone("Other", "Patient", EXPIRY.plusSeconds(60), "stale-writer");
+		assertThatThrownBy(() -> processes.saveAndFlush(stale))
+				.isInstanceOf(OptimisticLockingFailureException.class);
+		var actual = processes.findById(id).orElseThrow();
+		assertThat(actual.getPatientFirstName()).isEqualTo("Ana");
+		assertThat(actual.getExpiresAt()).isEqualTo(EXPIRY);
+		assertThat(actual.getLastModifiedBy()).isEqualTo("winner");
+		assertThat(actual.getVersion()).isEqualTo(1L);
+	}
+
+	@Test
+	void rollsBackConfirmationNamesStateExpiryAuditAndVersionTogether() {
+		var held = pending(owner);
+		held.markHeld("hold-rollback", "process-rollback", EXPIRY, "actor");
+		long id = processes.saveAndFlush(held).getId();
+		assertThatThrownBy(() -> transactions.executeWithoutResult(status -> {
+			var process = processes.findById(id).orElseThrow();
+			process.markWaitingForPhone("Ana", "Perez", EXPIRY.plusSeconds(1), "actor");
+			processes.flush();
+			throw new IllegalStateException("Controlled failure after flush");
+		})).isInstanceOf(IllegalStateException.class);
+		var actual = processes.findById(id).orElseThrow();
+		assertThat(actual.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(actual.getPatientFirstName()).isNull();
+		assertThat(actual.getPatientLastName()).isNull();
+		assertThat(actual.getExpiresAt()).isEqualTo(EXPIRY);
+		assertThat(actual.getLastModifiedBy()).isNull();
+		assertThat(actual.getLastModifiedDate()).isNull();
+		assertThat(actual.getVersion()).isZero();
+	}
+
+	@Test
+	void databaseRequiresPatientAndHoldDetailsForWaitingEvenWhenJpaIsBypassed() throws SQLException {
+		var held = pending(owner);
+		held.markHeld("hold-sql", "process-sql", EXPIRY, "actor");
+		long id = processes.saveAndFlush(held).getId();
+		String transition = "UPDATE reservation_process SET process_status='WAITING_FOR_PHONE', ";
+		for (String fields : List.of(
+				"patient_first_name=NULL, patient_last_name='Perez'",
+				"patient_first_name='Ana', patient_last_name=NULL",
+				"patient_first_name='A', patient_last_name='Perez'",
+				"patient_first_name='Ana', patient_last_name='P'",
+				"patient_first_name=E'\\t\\n', patient_last_name='Perez'",
+				"patient_first_name='Ana', patient_last_name='  '",
+				"patient_first_name='Ana', patient_last_name='Perez', hold_id=NULL",
+				"patient_first_name='Ana', patient_last_name='Perez', external_reservation_process_id=NULL",
+				"patient_first_name='Ana', patient_last_name='Perez', expires_at=NULL")) {
+			assertSqlRejected(transition + fields + " WHERE id=" + id, "23514");
+		}
+		for (String name : List.of("patient_first_name", "patient_last_name")) {
+			assertSqlRejected("UPDATE reservation_process SET " + name + "=repeat('a',101) WHERE id=" + id, "22001");
+		}
+		assertSqlRejected("UPDATE reservation_process SET version=NULL WHERE id=" + id, "23502");
+		var unchanged = processes.findById(id).orElseThrow();
+		assertThat(unchanged.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(unchanged.getPatientFirstName()).isNull();
 	}
 
 	private static ReservationProcessEntity pending(UserEntity user) {

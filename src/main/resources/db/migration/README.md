@@ -64,3 +64,28 @@ No modificar ni renombrar migraciones aplicadas o compartidas: agregar una nueva
 versión correctiva. No agregar migraciones vacías ni usar `baseline-on-migrate`
 para omitir inconsistencias. Los scripts no deben contener secretos ni acceder
 a Catalog. Las migraciones de prueba viven únicamente en recursos de test.
+
+## Confirmación inicial — V3 (A7.1, primer incremento)
+
+`V3__add_initial_confirmation_state.sql` agrega `WAITING_FOR_PHONE`, los nombres
+históricos del paciente y una versión para control optimista con JPA `@Version`.
+Las filas existentes conservan sus datos: versión inicial cero y nombres nulos.
+
+La transición local admitida en este incremento es `HELD → WAITING_FOR_PHONE`.
+Requiere nombre y apellido no blancos de 2–100 caracteres, los identificadores
+externos del hold/proceso y el vencimiento autoritativo. No equivale a una reserva
+finalmente confirmada: `PHONE_PENDING` es el estado de la reserva externa, no otro
+estado local introducido aquí. Los datos de paciente no se toman automáticamente
+de los campos opcionales del perfil de usuario.
+
+La entidad conserva nombres tal como fueron validados y trunca el vencimiento
+recibido a microsegundos para no redondearlo hacia adelante. No calcula un TTL.
+La transición actualiza auditoría; el guardado transaccional confirma o revierte
+nombres, estado, vencimiento, auditoría y versión juntos.
+
+La versión detecta escrituras sobre una observación obsoleta y evita que otra
+confirmación sobrescriba silenciosamente la primera. No evita por sí sola dos
+llamadas REST concurrentes ni revierte efectos externos. El puerto/adaptador de
+confirmación, los resultados inciertos y la coordinación REST se implementarán
+en los siguientes incrementos/Issues; este cambio no ejecuta confirmaciones,
+no implementa Kafka ni agrega estados futuros de recuperación.
