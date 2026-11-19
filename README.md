@@ -311,6 +311,65 @@ de persistencia, el hold puede existir: no repitas automáticamente el POST.
 Las credenciales técnicas nunca se devuelven a KMP; un problema de autenticación
 entre backends no requiere renovar el JWT del usuario final.
 
+### Confirmar inicialmente un proceso propio
+
+Usá el `id` local devuelto al iniciar el proceso y un JWT de usuario final:
+
+```http
+POST /api/reservation-processes/123/confirm
+Authorization: Bearer <jwt-usuario-final>
+Content-Type: application/json
+
+{"patientFirstName":"Juan","patientLastName":"Perez"}
+```
+
+Nombre y apellido son obligatorios, no blancos, de 2 a 100 caracteres y se
+conservan exactamente como se reciben. El ID debe ser un entero int64 positivo.
+No se aceptan propiedades adicionales: propietario, paciente externo e
+identificadores de cátedra los determina el backend.
+
+Respuesta `202 Accepted`, con `Cache-Control: no-store`:
+
+```json
+{"id":123,"status":"WAITING_FOR_PHONE","expiresAt":"2026-11-18T17:40:00Z"}
+```
+
+`WAITING_FOR_PHONE` indica aceptación inicial verificada y persistida; todavía
+falta el flujo asíncrono para confirmar la reserva definitivamente. `expiresAt`
+es el vencimiento observado del proceso, no la fecha del turno. Repetir con el
+mismo paciente sobre esa aceptación devuelve el estado observado sin otro POST
+remoto. Si el intento anterior está en curso o su resultado sigue sin verificarse,
+puede devolverse `202` con `CONFIRMATION_PENDING`: eso no acredita aceptación
+remota ni extiende el vencimiento. Un paciente diferente produce conflicto.
+
+Los errores usan `application/problem+json`, `Cache-Control: no-store` y estos códigos:
+
+| Situación | HTTP | Código |
+| --- | --- | --- |
+| Nombre/apellido ausentes o inválidos | 400 | `VALIDATION_ERROR` |
+| ID inválido, JSON inválido, tipos incorrectos o campos adicionales | 400 | `INVALID_REQUEST` |
+| JWT de usuario ausente o inválido | 401 | `UNAUTHORIZED` |
+| Proceso inexistente o de otro usuario | 404 | `RESERVATION_PROCESS_NOT_FOUND` |
+| Hold inexistente o vencido | 404 | `HOLD_NOT_FOUND` / `HOLD_EXPIRED` |
+| Profesional inexistente | 404 | `PROFESSIONAL_NOT_FOUND` |
+| Profesional deshabilitado u horario fuera de agenda | 400 | `PROFESSIONAL_DISABLED` / `INVALID_SLOT` |
+| Estado, versión o paciente incompatibles | 409 | `RESERVATION_PROCESS_CONFLICT` |
+| Slot reservado por otra reserva | 409 | `SLOT_ALREADY_RESERVED` |
+| Cátedra informa aceptación anterior sin verificación local | 409 | `RESERVATION_PROCESS_ALREADY_CONFIRMED` |
+| Inconsistencia de propiedad técnica o paciente externo | 502 | `HOLD_OWNER_MISMATCH` / `EXTERNAL_PATIENT_MISMATCH` |
+| Credenciales técnicas, rechazo no reconocido o agenda inválida de una dependencia | 502 | `RESERVATION_DEPENDENCY_ERROR` |
+| Fallo de consulta de Catalog previo a la confirmación | 503/504 | `RESERVATION_DEPENDENCY_UNAVAILABLE` / `RESERVATION_DEPENDENCY_TIMEOUT` |
+| Respuesta remota inválida, indisponibilidad o timeout de confirmación | 502/503/504 | `CONFIRMATION_OUTCOME_UNKNOWN` |
+| Fallo de acceso o guardado local | 500 | `RESERVATION_PERSISTENCE_FAILED` |
+| Aceptación remota sin persistencia local verificable | 500 | `CONFIRMATION_PERSISTENCE_FAILED` |
+| Error interno inesperado | 500 | `RESERVATION_CONFIRMATION_FAILED` |
+
+Decidí por HTTP y `code`, nunca por el texto de `detail`. Ante resultado incierto,
+aceptación anterior no verificada o fallo local, el efecto remoto puede existir:
+no repitas automáticamente la operación. Los fallos de autenticación entre
+backends no requieren renovar el JWT del usuario final. El envío de teléfono y
+la confirmación definitiva todavía no están implementados.
+
 ## Docker
 
 ```bash
