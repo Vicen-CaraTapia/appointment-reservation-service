@@ -154,3 +154,53 @@ El caso de uso será responsable de elegir las transiciones según la evidencia
 remota, sin mantener una transacción durante REST. La conciliación y recuperación
 automática siguen fuera de este incremento. No hay todavía nuevas rutas HTTP,
 llamadas de confirmación desde aplicación, procesamiento Kafka ni reintentos.
+
+### Coordinación de aplicación del intento (A7.3)
+
+`ConfirmReservationProcessUseCase` usa la identidad autenticada y el ID local para
+consultar el proceso propio. No recibe holdId, ID de proceso externo, identidad
+de paciente ni versión desde un controlador. Los nombres llegan mediante
+`ConfirmationPatient`, con las validaciones contractuales y `toString()` redactado.
+
+Para un proceso `HELD`, comprueba el plazo con un `Clock` inyectable, consulta
+profesional y agenda vigentes a través de `ReservationSlotValidator`/Catalog y
+revisa nuevamente el plazo. No consulta ocupaciones ni crea otro hold. Después
+del commit de `claimInitialConfirmation`, vuelve a revisar el plazo antes del
+POST. Si todavía no se envió y ya venció, libera esa versión del intento y
+reporta el vencimiento observado; no afirma un fracaso remoto.
+
+`AppointmentHoldConfirmer` expresa el límite REST en términos de aplicación.
+`CatedraAppointmentHoldConfirmationAdapter` reutiliza el cliente de A7.2 y
+traduce sus resultados y errores, sin propagar DTO HTTP ni causas técnicas al
+núcleo. No se agregan credenciales, clientes HTTP alternativos ni nuevos filtros.
+El reloj de producción usa UTC, siguiendo las configuraciones existentes.
+
+Solo una aceptación correlacionada guarda `WAITING_FOR_PHONE` mediante el puerto
+de persistencia. La aplicación no suma un TTL ni redondea el vencimiento remoto.
+Catalog y el POST se ejecutan fuera de las transacciones de persistencia.
+
+Una repetición con los mismos nombres sobre `CONFIRMATION_PENDING` o
+`WAITING_FOR_PHONE` devuelve el estado observado sin consultar Catalog, revisar
+otra vez su plazo ni ejecutar un nuevo POST. Nombres distintos generan conflicto
+sin reemplazar los del intento. Si se pierde la carrera por la versión al
+reclamar, se consulta una vez el estado propio; se devuelve progreso compatible
+si existe, o se informa el conflicto. No se intenta reclamar o enviar en bucle.
+
+Los siete rechazos funcionales inequívocos del contrato permiten liberar el
+intento antes de informar su código. Un fallo de esa liberación se informa como
+fallo local y no habilita un POST nuevo. `RESERVATION_PROCESS_ALREADY_CONFIRMED`
+no libera el intento ni demuestra confirmación final: solo permite devolver una
+aceptación local que pueda verificarse con los mismos IDs y paciente; si no está
+verificada se mantiene el error controlado. Esa comprobación usa únicamente una
+lectura local, no un endpoint remoto inventado.
+
+Timeout, transporte, 5xx, respuestas incompatibles y rechazos HTTP no clasificados
+conservan el intento pendiente. Ante un fallo de guardado posterior a aceptación,
+se consulta una vez el estado local: una aceptación ya persistida y correlacionada
+puede devolverse; en otro caso se informa `LOCAL_STATE_FAILURE`, sin liberar ni
+reenviar. Los errores de autenticación técnica siguen separados de los del
+usuario final. No se conservan causas con diagnósticos externos.
+
+No hay todavía un controlador público de confirmación (A7.4), un consumidor
+Kafka (M-A8) ni recuperación automática (M-A10). El estado local de espera no es
+una reserva definitivamente confirmada.

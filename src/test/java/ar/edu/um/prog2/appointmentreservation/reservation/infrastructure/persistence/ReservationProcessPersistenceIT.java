@@ -65,6 +65,12 @@ import ar.edu.um.prog2.appointmentreservation.professional.application.port.out.
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.HoldRequestException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationAuthenticationRequiredException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.StartReservationProcessUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ConfirmReservationProcessUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.InitialConfirmationException;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraAppointmentHoldConfirmationClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentHoldConfirmationRequest;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraAppointmentHoldConfirmationResponse;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.exception.CatedraHoldConfirmationException;
 import ar.edu.um.prog2.appointmentreservation.user.application.model.RegisterUserCommand;
 import ar.edu.um.prog2.appointmentreservation.user.application.port.out.FinalUserAuthenticator;
 import ar.edu.um.prog2.appointmentreservation.user.application.usecase.RegisterUserUseCase;
@@ -72,6 +78,7 @@ import ar.edu.um.prog2.appointmentreservation.user.application.usecase.RegisterU
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -266,6 +273,12 @@ class ReservationProcessPersistenceIT {
 		@Primary
 		CurrentProfessionalSource controlledWorkflowCatalog() {
 			return mock(CurrentProfessionalSource.class);
+		}
+
+		@Bean
+		@Primary
+		CatedraAppointmentHoldConfirmationClient controlledConfirmationClient() {
+			return mock(CatedraAppointmentHoldConfirmationClient.class);
 		}
 
 		@Bean
@@ -876,6 +889,136 @@ class ReservationProcessPersistenceIT {
 			assertSqlRejected(update + fields + " WHERE id=" + held.id(), "23514");
 		}
 		assertThat(processes.findById(held.id()).orElseThrow().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	@Test
+	void wiredInitialConfirmationCommitsItsClaimBeforePostAndReplaysPendingAndAcceptedStates() {
+		long id = heldForConfirmationWorkflow();
+		var patient = new ConfirmationPatient("Ana", "Perez");
+		var useCase = context.getBean(ConfirmReservationProcessUseCase.class);
+		var client = context.getBean(CatedraAppointmentHoldConfirmationClient.class);
+		var held = store().findOwned(id, identity(owner)).orElseThrow();
+		when(client.confirm(eq("hold-live-confirmation"), eq("process-live-confirmation"), any())).thenAnswer(call -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			var committed = store().findOwned(id, identity(owner)).orElseThrow();
+			assertThat(committed.status()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+			assertThat(committed.version()).isEqualTo(1);
+			assertThat(committed.patientFirstName()).isEqualTo("Ana");
+			// A second click during the remote operation observes the committed attempt without sending again.
+			assertThat(useCase.confirm(id, patient)).isEqualTo(committed);
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			return new CatedraAppointmentHoldConfirmationResponse("process-live-confirmation", "WAITING_FOR_PHONE",
+					held.hold().expiresAt().plusNanos(789));
+		});
+		var accepted = useCase.confirm(id, patient);
+		assertThat(accepted.status()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(accepted.version()).isEqualTo(2);
+		assertThat(accepted.hold().expiresAt()).isEqualTo(held.hold().expiresAt());
+		assertThat(accepted.externalPatientId()).isEqualTo(ExternalPatientId.fromUserId(owner.getId()));
+		assertThat(accepted.patientLastName()).isEqualTo("Perez");
+		assertThat(useCase.confirm(id, patient)).isEqualTo(accepted);
+		verify(client).confirm("hold-live-confirmation", "process-live-confirmation",
+				new CatedraAppointmentHoldConfirmationRequest(ExternalPatientId.fromUserId(owner.getId()), "Ana", "Perez"));
+		verifyNoMoreInteractions(client);
+		verify(context.getBean(CurrentProfessionalSource.class)).load(202);
+		assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+		assertThat(processes.findById(id).orElseThrow().getLastModifiedBy()).isEqualTo(owner.getLogin());
+		verifyNoInteractions(context.getBean(CatedraAppointmentHoldClient.class));
+	}
+
+	@Test
+	void wiredInitialConfirmationTimeoutKeepsTheClaimAndARepeatNeverResends() {
+		long id = heldForConfirmationWorkflow();
+		var useCase = context.getBean(ConfirmReservationProcessUseCase.class);
+		var client = context.getBean(CatedraAppointmentHoldConfirmationClient.class);
+		when(client.confirm(any(), any(), any())).thenThrow(new CatedraTimeoutException());
+		var patient = new ConfirmationPatient("Ana", "Perez");
+		assertThatThrownBy(() -> useCase.confirm(id, patient))
+				.isInstanceOfSatisfying(InitialConfirmationException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(InitialConfirmationException.Reason.TIMEOUT)).hasNoCause();
+		var pending = store().findOwned(id, identity(owner)).orElseThrow();
+		assertThat(pending.status()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(pending.version()).isEqualTo(1);
+		assertThat(useCase.confirm(id, patient)).isEqualTo(pending);
+		verify(client).confirm(any(), any(), any());
+		verifyNoMoreInteractions(client);
+		verify(context.getBean(CurrentProfessionalSource.class)).load(202);
+	}
+
+	@Test
+	void wiredInitialConfirmationReportsLocalFailureAfterRemoteAcceptanceWithoutReleasingOrResending() throws SQLException {
+		long id = heldForConfirmationWorkflow();
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.execute("ALTER TABLE reservation_process ADD CONSTRAINT test_reject_accepted_save CHECK (process_status <> 'WAITING_FOR_PHONE')");
+		}
+		var client = context.getBean(CatedraAppointmentHoldConfirmationClient.class);
+		var expiry = store().findOwned(id, identity(owner)).orElseThrow().hold().expiresAt();
+		when(client.confirm(any(), any(), any())).thenReturn(
+				new CatedraAppointmentHoldConfirmationResponse("process-live-confirmation", "WAITING_FOR_PHONE", expiry));
+		var patient = new ConfirmationPatient("Ana", "Perez");
+		var useCase = context.getBean(ConfirmReservationProcessUseCase.class);
+		assertThatThrownBy(() -> useCase.confirm(id, patient))
+				.isInstanceOfSatisfying(InitialConfirmationException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(InitialConfirmationException.Reason.LOCAL_STATE_FAILURE))
+				.hasNoCause().hasMessageNotContaining("test_reject_accepted_save");
+		var pending = store().findOwned(id, identity(owner)).orElseThrow();
+		assertThat(pending.status()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(pending.version()).isEqualTo(1);
+		assertThat(pending.patientFirstName()).isEqualTo("Ana");
+		assertThat(useCase.confirm(id, patient)).isEqualTo(pending);
+		verify(client).confirm(any(), any(), any());
+		verifyNoMoreInteractions(client);
+	}
+
+	@Test
+	void wiredDefinitiveRejectionReleasesOnlyItsOwnAttemptAndPreservesTheRemoteExpiry() {
+		long id = heldForConfirmationWorkflow();
+		var before = store().findOwned(id, identity(owner)).orElseThrow();
+		var client = context.getBean(CatedraAppointmentHoldConfirmationClient.class);
+		when(client.confirm(any(), any(), any()))
+				.thenThrow(new CatedraHoldConfirmationException(CatedraHoldConfirmationException.Reason.HOLD_EXPIRED));
+		assertThatThrownBy(() -> context.getBean(ConfirmReservationProcessUseCase.class)
+				.confirm(id, new ConfirmationPatient("Ana", "Perez")))
+				.isInstanceOfSatisfying(InitialConfirmationException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(InitialConfirmationException.Reason.HOLD_EXPIRED));
+		var after = store().findOwned(id, identity(owner)).orElseThrow();
+		assertThat(after.status()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(after.version()).isEqualTo(2);
+		assertThat(after.patientFirstName()).isNull();
+		assertThat(after.patientLastName()).isNull();
+		assertThat(after.hold()).isEqualTo(before.hold());
+		verify(client).confirm(any(), any(), any());
+		verifyNoMoreInteractions(client);
+	}
+
+	@Test
+	void wiredConfirmationChecksTheRealBearerOwnerBeforeReadingCatalogOrConfirmingAnotherUsersHold() {
+		long id = heldForConfirmationWorkflow();
+		context.getBean(RegisterUserUseCase.class).register(new RegisterUserCommand("other-user", WORKFLOW_PASSWORD,
+				null, null, "other-user@example.test", null, "es"));
+		var token = context.getBean(FinalUserAuthenticator.class).authenticate("other-user", WORKFLOW_PASSWORD, false);
+		var jwt = context.getBean(JwtDecoder.class).decode(token.value());
+		var authentication = new JwtAuthenticationConverter().convert(jwt);
+		var securityContext = SecurityContextHolder.createEmptyContext();
+		securityContext.setAuthentication(authentication);
+		SecurityContextHolder.setContext(securityContext);
+		assertThatThrownBy(() -> context.getBean(ConfirmReservationProcessUseCase.class)
+				.confirm(id, new ConfirmationPatient("Ana", "Perez")))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.NOT_FOUND));
+		verifyNoInteractions(context.getBean(CurrentProfessionalSource.class), context.getBean(CatedraAppointmentHoldConfirmationClient.class));
+		assertThat(processes.findById(id).orElseThrow().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	private long heldForConfirmationWorkflow() {
+		authenticateWorkflowUser();
+		when(context.getBean(CurrentProfessionalSource.class).load(202)).thenAnswer(call -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			return workflowProfessional();
+		});
+		var expiry = Instant.now().plusSeconds(300).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+		return store().createHeld(identity(owner), workflowSelection(),
+				new AppointmentHold("hold-live-confirmation", "process-live-confirmation", expiry)).id();
 	}
 
 	private static ReservationProcessEntity pending(UserEntity user) {

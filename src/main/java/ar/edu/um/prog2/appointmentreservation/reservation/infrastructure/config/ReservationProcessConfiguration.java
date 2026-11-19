@@ -1,5 +1,7 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.config;
 
+import java.time.Clock;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -14,9 +16,17 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.re
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.AppointmentHoldRequester;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.CurrentReservationUser;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.StartReservationProcessUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ConfirmReservationProcessUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.AppointmentHoldConfirmer;
 
 @Configuration(proxyBeanMethods = false)
 public class ReservationProcessConfiguration {
+
+	@Bean
+	public ConfirmReservationProcessUseCase confirmReservationProcessUseCase(CurrentReservationUser currentUser,
+			ReservationProcessStore processes, ReservationSlotValidator slots, AppointmentHoldConfirmer confirmer) {
+		return new ConfirmReservationProcessUseCase(currentUser, processes, slots, confirmer, Clock.systemUTC());
+	}
 
 	@Bean
 	public StartReservationProcessUseCase startReservationProcessUseCase(CurrentReservationUser currentUser,
