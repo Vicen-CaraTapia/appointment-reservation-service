@@ -6,6 +6,7 @@ public final class ReservationProcessStateException extends RuntimeException {
 	public enum Reason {
 		NOT_FOUND,
 		CONFLICT,
+		EXPIRED,
 		STORAGE_FAILURE
 	}
 
@@ -15,6 +16,7 @@ public final class ReservationProcessStateException extends RuntimeException {
 		super(switch (reason) {
 			case NOT_FOUND -> "Reservation process was not found for the authenticated user";
 			case CONFLICT -> "Reservation process state no longer matches the expected observation";
+			case EXPIRED -> "The locally observed hold expiration has been reached";
 			case STORAGE_FAILURE -> "Reservation process storage failed; the remote outcome cannot be determined from this local failure";
 		});
 		this.reason = reason;

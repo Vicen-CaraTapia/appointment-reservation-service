@@ -19,6 +19,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException.Reason;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
@@ -164,7 +165,7 @@ class JpaReservationProcessAdapterTest {
 
 	@Test
 	void recordsConfirmationAndReturnsOnlyAfterCommit() {
-		prepareOwnedHold();
+		prepareClaimedHold();
 		var result = adapter.recordInitialConfirmation(123, 0, OWNER, confirmation());
 		assertThat(result.status()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
 		assertThat(result.patientFirstName()).isEqualTo("Ana");
@@ -190,7 +191,7 @@ class JpaReservationProcessAdapterTest {
 	@ParameterizedTest
 	@ValueSource(strings = {"version", "status", "external-id"})
 	void refusesStaleOrIncompatibleObservationsBeforeChangingTheEntity(String mismatch) {
-		var entity = prepareOwnedHold();
+		var entity = prepareClaimedHold();
 		if (mismatch.equals("version")) {
 			ReflectionTestUtils.setField(entity, "version", 1L);
 		} else if (mismatch.equals("status")) {
@@ -199,13 +200,13 @@ class JpaReservationProcessAdapterTest {
 			ReflectionTestUtils.setField(entity, "externalReservationProcessId", "other-process");
 		}
 		assertStateFailure(Reason.CONFLICT);
-		assertThat(entity.getPatientFirstName()).isNull();
+		assertThat(entity.getPatientFirstName()).isEqualTo("Ana");
 		verify(processes, never()).flush();
 	}
 
 	@Test
 	void translatesOptimisticConflictWithoutLeakingItsDiagnostics() {
-		prepareOwnedHold();
+		prepareClaimedHold();
 		doThrow(new OptimisticLockingFailureException("private diagnostic")).when(processes).flush();
 		assertStateFailure(Reason.CONFLICT);
 		verify(manager).rollback(transaction);
@@ -214,7 +215,7 @@ class JpaReservationProcessAdapterTest {
 	@ParameterizedTest
 	@ValueSource(strings = {"begin", "read", "flush", "commit"})
 	void sanitizesStorageFailureAtEveryWriteTransactionStage(String stage) {
-		prepareOwnedHold();
+		prepareClaimedHold();
 		var failure = new TransactionSystemException("private diagnostic with patient input and credentials");
 		switch (stage) {
 			case "begin" -> when(manager.getTransaction(any())).thenThrow(failure);
@@ -245,6 +246,85 @@ class JpaReservationProcessAdapterTest {
 		assertThatThrownBy(() -> adapter.recordInitialConfirmation(123, 0, OWNER, null))
 				.isInstanceOf(NullPointerException.class);
 		verifyNoInteractions(manager, users, processes);
+	}
+
+	@Test
+	void commitsTheClaimBeforeReturningItsObservationAndDoesNotExtendExpiration() {
+		prepareOwnedHold();
+		var result = adapter.claimInitialConfirmation(123, 0, OWNER, new ConfirmationPatient("Ana", "Perez"), HOLD.expiresAt().minusSeconds(1));
+		assertThat(result.status()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(result.patientFirstName()).isEqualTo("Ana");
+		assertThat(result.patientLastName()).isEqualTo("Perez");
+		assertThat(result.hold().expiresAt()).isEqualTo(HOLD.expiresAt());
+		var order = inOrder(manager, processes);
+		order.verify(manager).getTransaction(any());
+		order.verify(processes).findByIdAndOwner_Id(123, 42);
+		order.verify(processes).flush();
+		order.verify(manager).commit(transaction);
+	}
+
+	@ParameterizedTest
+	@ValueSource(longs = {0, 1})
+	void rejectsClaimAtOrAfterTheObservedDeadlineWithoutMutation(long nanosAfterDeadline) {
+		var entity = prepareOwnedHold();
+		assertThatThrownBy(() -> adapter.claimInitialConfirmation(123, 0, OWNER,
+				new ConfirmationPatient("Ana", "Perez"), HOLD.expiresAt().plusNanos(nanosAfterDeadline)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.EXPIRED));
+		assertThat(entity.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(entity.getPatientFirstName()).isNull();
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void refusesASecondClaimAndProtectsTheOriginalPatient() {
+		var entity = prepareClaimedHold();
+		assertThatThrownBy(() -> adapter.claimInitialConfirmation(123, 0, OWNER,
+				new ConfirmationPatient("Other", "Patient"), HOLD.expiresAt().minusSeconds(1)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+		assertThat(entity.getPatientFirstName()).isEqualTo("Ana");
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void doesNotReturnAPostPermitIfClaimCommitFails() {
+		prepareOwnedHold();
+		doThrow(new TransactionSystemException("private diagnostic")).when(manager).commit(transaction);
+		assertThatThrownBy(() -> adapter.claimInitialConfirmation(123, 0, OWNER,
+				new ConfirmationPatient("Ana", "Perez"), HOLD.expiresAt().minusSeconds(1)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.STORAGE_FAILURE))
+				.hasNoCause().hasMessageNotContaining("private diagnostic");
+	}
+
+	@Test
+	void releasesOnlyAClaimedVersionAndClearsPatientDetails() {
+		prepareClaimedHold();
+		var result = adapter.releaseInitialConfirmation(123, 0, OWNER);
+		assertThat(result.status()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(result.patientFirstName()).isNull();
+		assertThat(result.patientLastName()).isNull();
+		assertThat(result.hold().expiresAt()).isEqualTo(HOLD.expiresAt());
+		verify(manager).commit(transaction);
+	}
+
+	@Test
+	void refusesReleaseOfAnUnclaimedProcessAndAcceptanceForDifferentPatientNames() {
+		var entity = prepareOwnedHold();
+		assertThatThrownBy(() -> adapter.releaseInitialConfirmation(123, 0, OWNER))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+		entity.claimConfirmation("Different", "Patient", "alice");
+		assertStateFailure(Reason.CONFLICT);
+		assertThat(entity.getPatientFirstName()).isEqualTo("Different");
+		verify(processes, never()).flush();
+	}
+
+	private ReservationProcessEntity prepareClaimedHold() {
+		var entity = prepareOwnedHold();
+		entity.claimConfirmation("Ana", "Perez", "alice");
+		return entity;
 	}
 
 	private ReservationProcessEntity prepareOwnedHold() {

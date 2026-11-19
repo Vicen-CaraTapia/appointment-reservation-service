@@ -108,3 +108,49 @@ SQL y datos del paciente. Los modelos con datos personales redactan `toString()`
 Este puerto no realiza la confirmación REST. Un conflicto local después de una
 aceptación remota no demuestra un fracaso remoto ni autoriza repetir el POST;
 la coordinación y la incertidumbre siguen siendo responsabilidad de A7.3.
+
+## Intento durable de confirmación — V4 (A7.3, primer incremento)
+
+`V4__add_confirmation_attempt_state.sql` conserva V1–V3 y sus filas existentes.
+Agrega el estado **local** `CONFIRMATION_PENDING` a los constraints y exige los
+nombres del paciente, ambos IDs externos y vencimiento mientras el intento está
+pendiente. No agrega tablas, columnas de Kafka ni estados finales externos.
+
+Este incremento reemplaza la transición directa preparada en A7.1 por:
+
+```text
+HELD → CONFIRMATION_PENDING → WAITING_FOR_PHONE
+                  ↓
+                 HELD (solo si se sabe que no hubo aceptación remota)
+```
+
+- `claimInitialConfirmation` comprueba propietario, versión, estado `HELD` y
+  vencimiento observado; recibe el instante del reloj controlable de aplicación.
+  Guarda nombres y auditoría y entrega la observación con su nueva versión solo
+  después del commit local. El siguiente incremento podrá enviar el POST después
+  de obtener esta observación. La comprobación local no sustituye a cátedra ni
+  elimina la necesidad de volver a revisar el plazo antes del envío.
+- `recordInitialConfirmation` ahora exige el intento pendiente, su versión,
+  proceso externo y los mismos nombres reclamados. Guarda el vencimiento remoto
+  con precisión conservadora y pasa a `WAITING_FOR_PHONE`.
+- `releaseInitialConfirmation` exige la versión del intento pendiente, vuelve a
+  `HELD` y borra los nombres del intento. No extiende el vencimiento ni cambia IDs
+  o propietario. Solo debe invocarse si el POST no se envió o existe un rechazo
+  que permita afirmar que no hubo aceptación; nunca por un timeout, una respuesta
+  perdida, un 5xx o `RESERVATION_PROCESS_ALREADY_CONFIRMED`.
+
+Cada modificación usa una transacción local corta y control optimista. Dos
+solicitudes concurrentes no pueden obtener permiso de envío para la misma
+versión. Si se libera un intento y se reclama otro, la nueva versión impide que
+una respuesta o liberación vieja actúe sobre el intento nuevo.
+
+`CONFIRMATION_PENDING` no afirma que cátedra recibió la solicitud: puede representar
+un envío en curso o un resultado todavía no verificado, incluso una caída antes
+del POST. No se restablece automáticamente al reiniciar ni al vencer el hold:
+ninguna de esas condiciones demuestra que el efecto remoto no ocurrió. Una
+operación local rechazada por vencimiento tampoco inventa un estado externo.
+
+El caso de uso será responsable de elegir las transiciones según la evidencia
+remota, sin mantener una transacción durante REST. La conciliación y recuperación
+automática siguen fuera de este incremento. No hay todavía nuevas rutas HTTP,
+llamadas de confirmación desde aplicación, procesamiento Kafka ni reintentos.

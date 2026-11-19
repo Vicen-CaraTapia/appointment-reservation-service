@@ -128,13 +128,44 @@ public class ReservationProcessEntity {
 		this.status = ReservationProcessStatus.HELD;
 	}
 
-	/** Records an accepted initial confirmation, not a final appointment confirmation. */
-	public void markWaitingForPhone(String firstName, String lastName, Instant confirmedExpiry, String modifiedBy) {
+	/** Claims the local attempt before any remote confirmation is sent. */
+	public void claimConfirmation(String firstName, String lastName, String modifiedBy) {
 		if (!ReservationProcessStatus.HELD.equals(status)) {
-			throw new IllegalStateException("Only a held process can receive its initial confirmation");
+			throw new IllegalStateException("Only a held process can start initial confirmation");
 		}
 		String checkedFirstName = patientName(firstName);
 		String checkedLastName = patientName(lastName);
+		String checkedActor = auditActor(modifiedBy);
+		this.patientFirstName = checkedFirstName;
+		this.patientLastName = checkedLastName;
+		this.lastModifiedBy = checkedActor;
+		this.lastModifiedDate = Instant.now();
+		this.status = ReservationProcessStatus.CONFIRMATION_PENDING;
+	}
+
+	/** Caller must know the POST was not sent or was definitively rejected, never merely timed out. */
+	public void releaseConfirmation(String modifiedBy) {
+		if (!ReservationProcessStatus.CONFIRMATION_PENDING.equals(status)) {
+			throw new IllegalStateException("Only a pending confirmation can be released");
+		}
+		String checkedActor = auditActor(modifiedBy);
+		this.patientFirstName = null;
+		this.patientLastName = null;
+		this.lastModifiedBy = checkedActor;
+		this.lastModifiedDate = Instant.now();
+		this.status = ReservationProcessStatus.HELD;
+	}
+
+	/** Completes the claimed attempt; it does not represent a final appointment confirmation. */
+	public void markWaitingForPhone(String firstName, String lastName, Instant confirmedExpiry, String modifiedBy) {
+		if (!ReservationProcessStatus.CONFIRMATION_PENDING.equals(status)) {
+			throw new IllegalStateException("Only a claimed process can receive its initial confirmation");
+		}
+		String checkedFirstName = patientName(firstName);
+		String checkedLastName = patientName(lastName);
+		if (!checkedFirstName.equals(patientFirstName) || !checkedLastName.equals(patientLastName)) {
+			throw new IllegalStateException("Accepted patient details must match the claimed attempt");
+		}
 		Instant checkedExpiry = Objects.requireNonNull(confirmedExpiry, "Confirmation expiration is required")
 				.truncatedTo(ChronoUnit.MICROS);
 		String checkedActor = auditActor(modifiedBy);

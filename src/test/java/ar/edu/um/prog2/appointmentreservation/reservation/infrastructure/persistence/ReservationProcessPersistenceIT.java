@@ -9,6 +9,10 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
@@ -39,6 +43,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException.Reason;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
@@ -105,6 +110,12 @@ class ReservationProcessPersistenceIT {
 		}
 		Flyway.configure().dataSource(url, username, password).schemas(schema).defaultSchema(schema)
 				.createSchemas(false).locations("classpath:db/migration").target("1").load().migrate();
+		startApplicationContext();
+		String hash = context.getBean(PasswordEncoder.class).encode("test-only-process-persistence-passphrase");
+		owner = users.saveAndFlush(new UserEntity("alice", hash, null, null, "alice@example.test", null, "es", "backend-test"));
+	}
+
+	private void startApplicationContext() {
 		Map<String, Object> properties = Map.of(
 				FinalUserJwtTestSupport.SECRET_PROPERTY, FinalUserJwtTestSupport.signingSecret(),
 				"spring.datasource.url", url,
@@ -125,8 +136,6 @@ class ReservationProcessPersistenceIT {
 		users = context.getBean(UserJpaRepository.class);
 		processes = context.getBean(ReservationProcessJpaRepository.class);
 		transactions = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-		String hash = context.getBean(PasswordEncoder.class).encode("test-only-process-persistence-passphrase");
-		owner = users.saveAndFlush(new UserEntity("alice", hash, null, null, "alice@example.test", null, "es", "backend-test"));
 	}
 
 	@AfterEach
@@ -346,9 +355,9 @@ class ReservationProcessPersistenceIT {
 	}
 
 	@Test
-	void appliesV2AndV3AfterAnExistingV1WithoutReapplyingMigrations() {
+	void appliesLaterMigrationsAfterAnExistingV1WithoutReapplyingThem() {
 		var flyway = context.getBean(Flyway.class);
-		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3");
+		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4");
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 
@@ -512,6 +521,7 @@ class ReservationProcessPersistenceIT {
 		var created = processes.findById(saved.getId()).orElseThrow().getCreatedDate();
 		transactions.executeWithoutResult(status -> {
 			var process = processes.findByIdAndOwner_Id(saved.getId(), owner.getId()).orElseThrow();
+			process.claimConfirmation("Ana", "Perez", "confirmation-adapter");
 			process.markWaitingForPhone("Ana", "Perez", EXPIRY.plusNanos(789), "confirmation-adapter");
 			processes.flush();
 		});
@@ -540,8 +550,10 @@ class ReservationProcessPersistenceIT {
 		var first = processes.findById(id).orElseThrow();
 		var stale = processes.findById(id).orElseThrow();
 		assertThat(stale.getVersion()).isEqualTo(first.getVersion());
+		first.claimConfirmation("Ana", "Perez", "winner");
 		first.markWaitingForPhone("Ana", "Perez", EXPIRY, "winner");
 		processes.saveAndFlush(first);
+		stale.claimConfirmation("Other", "Patient", "stale-writer");
 		stale.markWaitingForPhone("Other", "Patient", EXPIRY.plusSeconds(60), "stale-writer");
 		assertThatThrownBy(() -> processes.saveAndFlush(stale))
 				.isInstanceOf(OptimisticLockingFailureException.class);
@@ -559,6 +571,7 @@ class ReservationProcessPersistenceIT {
 		long id = processes.saveAndFlush(held).getId();
 		assertThatThrownBy(() -> transactions.executeWithoutResult(status -> {
 			var process = processes.findById(id).orElseThrow();
+			process.claimConfirmation("Ana", "Perez", "actor");
 			process.markWaitingForPhone("Ana", "Perez", EXPIRY.plusSeconds(1), "actor");
 			processes.flush();
 			throw new IllegalStateException("Controlled failure after flush");
@@ -612,9 +625,11 @@ class ReservationProcessPersistenceIT {
 		assertThat(observed.version()).isZero();
 		assertThat(observed.selection()).isEqualTo(selection());
 		var confirmation = new InitialReservationConfirmation("process-port", " Ana ", "Perez", EXPIRY.plusNanos(789));
-		var result = store().recordInitialConfirmation(held.id(), observed.version(), identity(owner), confirmation);
+		var claim = store().claimInitialConfirmation(held.id(), observed.version(), identity(owner),
+				new ConfirmationPatient(" Ana ", "Perez"), EXPIRY.minusSeconds(1));
+		var result = store().recordInitialConfirmation(held.id(), claim.version(), identity(owner), confirmation);
 		assertThat(result.status()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
-		assertThat(result.version()).isEqualTo(1);
+		assertThat(result.version()).isEqualTo(2);
 		assertThat(result.patientFirstName()).isEqualTo(" Ana ");
 		assertThat(result.patientLastName()).isEqualTo("Perez");
 		assertThat(result.externalPatientId()).isEqualTo(ExternalPatientId.fromUserId(owner.getId()));
@@ -647,8 +662,10 @@ class ReservationProcessPersistenceIT {
 	void applicationPortRejectsRepeatedOrStaleAcceptanceWithoutReplacingTheFirstPatient() {
 		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-repeated-port", "process-repeated-port", EXPIRY));
 		var accepted = new InitialReservationConfirmation("process-repeated-port", "Ana", "Perez", EXPIRY);
-		store().recordInitialConfirmation(held.id(), 0, identity(owner), accepted);
-		for (long version : List.of(0L, 1L)) {
+		var claim = store().claimInitialConfirmation(held.id(), 0, identity(owner),
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1));
+		store().recordInitialConfirmation(held.id(), claim.version(), identity(owner), accepted);
+		for (long version : List.of(0L, 1L, 2L)) {
 			assertThatThrownBy(() -> store().recordInitialConfirmation(held.id(), version, identity(owner),
 					new InitialReservationConfirmation("process-repeated-port", "Other", "Patient", EXPIRY.plusSeconds(60))))
 					.isInstanceOfSatisfying(ReservationProcessStateException.class,
@@ -657,43 +674,208 @@ class ReservationProcessPersistenceIT {
 		var actual = processes.findById(held.id()).orElseThrow();
 		assertThat(actual.getPatientFirstName()).isEqualTo("Ana");
 		assertThat(actual.getExpiresAt()).isEqualTo(EXPIRY);
-		assertThat(actual.getVersion()).isEqualTo(1L);
+		assertThat(actual.getVersion()).isEqualTo(2L);
 	}
 
 	@Test
 	void applicationPortRejectsAnUnrelatedRemoteProcessWithoutChangingLocalState() {
 		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-correlation-port", "process-correlation-port", EXPIRY));
-		assertThatThrownBy(() -> store().recordInitialConfirmation(held.id(), 0, identity(owner),
+		var claim = store().claimInitialConfirmation(held.id(), 0, identity(owner), new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1));
+		assertThatThrownBy(() -> store().recordInitialConfirmation(held.id(), claim.version(), identity(owner),
 				new InitialReservationConfirmation("process-other", "Ana", "Perez", EXPIRY)))
 				.isInstanceOfSatisfying(ReservationProcessStateException.class,
 						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
 		var actual = processes.findById(held.id()).orElseThrow();
-		assertThat(actual.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(actual.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
 		assertThat(actual.getExternalReservationProcessId()).isEqualTo("process-correlation-port");
-		assertThat(actual.getVersion()).isZero();
+		assertThat(actual.getVersion()).isEqualTo(claim.version());
 	}
 
 	@Test
 	void applicationPortRollsBackDatabaseFailureAndDoesNotLeakPatientOrSqlDiagnostics() throws SQLException {
 		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-failure-port", "process-failure-port", EXPIRY));
+		var claim = store().claimInitialConfirmation(held.id(), 0, identity(owner), new ConfirmationPatient("PrivatePatient", "PrivateSurname"), EXPIRY.minusSeconds(1));
 		// Isolated schema only: force a real database rejection after entity mutation.
 		try (var connection = connection(); var statement = connection.createStatement()) {
 			statement.execute("ALTER TABLE reservation_process ADD CONSTRAINT test_reject_confirmation"
 					+ " CHECK (process_status <> 'WAITING_FOR_PHONE')");
 		}
-		assertThatThrownBy(() -> store().recordInitialConfirmation(held.id(), 0, identity(owner),
+		assertThatThrownBy(() -> store().recordInitialConfirmation(held.id(), claim.version(), identity(owner),
 				new InitialReservationConfirmation("process-failure-port", "PrivatePatient", "PrivateSurname", EXPIRY.plusSeconds(1))))
 				.isInstanceOfSatisfying(ReservationProcessStateException.class,
 						failure -> assertThat(failure.reason()).isEqualTo(Reason.STORAGE_FAILURE))
 				.hasNoCause().hasMessageNotContaining("PrivatePatient").hasMessageNotContaining("test_reject_confirmation");
 		var actual = processes.findById(held.id()).orElseThrow();
+		assertThat(actual.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(actual.getPatientFirstName()).isEqualTo("PrivatePatient");
+		assertThat(actual.getPatientLastName()).isEqualTo("PrivateSurname");
+		assertThat(actual.getExpiresAt()).isEqualTo(EXPIRY);
+		assertThat(actual.getLastModifiedBy()).isEqualTo(owner.getLogin());
+		assertThat(actual.getLastModifiedDate()).isNotNull();
+		assertThat(actual.getVersion()).isEqualTo(claim.version());
+	}
+
+	@Test
+	void onlyOneConcurrentRequestCanCommitAConfirmationClaim() throws Exception {
+		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-race", "process-race", EXPIRY));
+		var authenticated = identity(owner);
+		var ready = new CountDownLatch(2);
+		var start = new CountDownLatch(1);
+		Callable<String> task = () -> {
+			ready.countDown();
+			assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+			try {
+				var claim = store().claimInitialConfirmation(held.id(), 0, authenticated,
+						new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1));
+				assertThat(claim.version()).isEqualTo(1);
+				return "CLAIMED";
+			} catch (ReservationProcessStateException failure) {
+				assertThat(failure.reason()).isEqualTo(Reason.CONFLICT);
+				return "CONFLICT";
+			}
+		};
+		try (var executor = Executors.newFixedThreadPool(2)) {
+			var first = executor.submit(task);
+			var second = executor.submit(task);
+			try {
+				assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+			} finally {
+				start.countDown();
+			}
+			assertThat(List.of(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS)))
+					.containsExactlyInAnyOrder("CLAIMED", "CONFLICT");
+		}
+		var actual = store().findOwned(held.id(), authenticated).orElseThrow();
+		assertThat(actual.status()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(actual.patientFirstName()).isEqualTo("Ana");
+		assertThat(actual.hold().expiresAt()).isEqualTo(EXPIRY);
+		assertThat(processes.count()).isEqualTo(1);
+	}
+
+	@Test
+	void pendingClaimSurvivesApplicationRestartAndExpiryDoesNotAuthorizeAnotherPost() {
+		var authenticated = identity(owner);
+		var held = store().createHeld(authenticated, selection(), new AppointmentHold("hold-restart", "process-restart", EXPIRY));
+		var claim = store().claimInitialConfirmation(held.id(), 0, authenticated,
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1));
+		context.close();
+		startApplicationContext();
+		assertThat(store().findOwned(held.id(), authenticated)).contains(claim);
+		assertThatThrownBy(() -> store().claimInitialConfirmation(held.id(), claim.version(), authenticated,
+				new ConfirmationPatient("Other", "Patient"), EXPIRY.plusSeconds(60)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+		assertThat(store().findOwned(held.id(), authenticated)).contains(claim);
+	}
+
+	@Test
+	void aReleasedAttemptCannotCompleteOrReleaseASubsequentAttemptWithItsOldVersion() {
+		var authenticated = identity(owner);
+		var held = store().createHeld(authenticated, selection(), new AppointmentHold("hold-attempts", "process-attempts", EXPIRY));
+		var first = store().claimInitialConfirmation(held.id(), 0, authenticated,
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1));
+		var released = store().releaseInitialConfirmation(held.id(), first.version(), authenticated);
+		assertThat(released.status()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(released.patientFirstName()).isNull();
+		assertThat(released.patientLastName()).isNull();
+		assertThat(released.hold()).isEqualTo(first.hold());
+		assertThat(released.version()).isEqualTo(2);
+		var second = store().claimInitialConfirmation(held.id(), released.version(), authenticated,
+				new ConfirmationPatient("Other", "Patient"), EXPIRY.minusSeconds(1));
+		assertThat(second.version()).isEqualTo(3);
+		assertThatThrownBy(() -> store().releaseInitialConfirmation(held.id(), first.version(), authenticated))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+		assertThatThrownBy(() -> store().recordInitialConfirmation(held.id(), first.version(), authenticated,
+				new InitialReservationConfirmation("process-attempts", "Ana", "Perez", EXPIRY)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+		assertThat(store().findOwned(held.id(), authenticated)).contains(second);
+		var accepted = store().recordInitialConfirmation(held.id(), second.version(), authenticated,
+				new InitialReservationConfirmation("process-attempts", "Other", "Patient", EXPIRY));
+		assertThat(accepted.status()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(accepted.version()).isEqualTo(4);
+		assertThatThrownBy(() -> store().releaseInitialConfirmation(held.id(), accepted.version(), authenticated))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+	}
+
+	@Test
+	void neitherClaimNorReleaseCanAccessAnotherUsersProcess() {
+		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-ownership", "process-ownership", EXPIRY));
+		var other = users.saveAndFlush(new UserEntity("bob", owner.getPasswordHash(), null, null,
+				"bob@example.test", null, "es", "actor"));
+		assertThatThrownBy(() -> store().claimInitialConfirmation(held.id(), 0, identity(other),
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.NOT_FOUND));
+		var claim = store().claimInitialConfirmation(held.id(), 0, identity(owner),
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1));
+		assertThatThrownBy(() -> store().releaseInitialConfirmation(held.id(), claim.version(), identity(other)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.NOT_FOUND));
+		assertThat(store().findOwned(held.id(), identity(owner))).contains(claim);
+	}
+
+	@Test
+	void claimAtItsExpirationIsRejectedWithoutInventingARemoteOutcome() {
+		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-expired-claim", "process-expired-claim", EXPIRY));
+		assertThatThrownBy(() -> store().claimInitialConfirmation(held.id(), 0, identity(owner),
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.EXPIRED));
+		var actual = processes.findById(held.id()).orElseThrow();
+		assertThat(actual.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(actual.getVersion()).isZero();
+		assertThat(actual.getPatientFirstName()).isNull();
+		assertThat(actual.getLastModifiedDate()).isNull();
+	}
+
+	@Test
+	void failedClaimAndFailedReleaseRollBackTheirWholeLocalTransition() throws SQLException {
+		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-claim-rollback", "process-claim-rollback", EXPIRY));
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.execute("ALTER TABLE reservation_process ADD CONSTRAINT test_reject_claim CHECK (process_status <> 'CONFIRMATION_PENDING')");
+		}
+		assertThatThrownBy(() -> store().claimInitialConfirmation(held.id(), 0, identity(owner),
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.STORAGE_FAILURE)).hasNoCause();
+		var actual = processes.findById(held.id()).orElseThrow();
 		assertThat(actual.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
 		assertThat(actual.getPatientFirstName()).isNull();
-		assertThat(actual.getPatientLastName()).isNull();
-		assertThat(actual.getExpiresAt()).isEqualTo(EXPIRY);
 		assertThat(actual.getLastModifiedBy()).isNull();
-		assertThat(actual.getLastModifiedDate()).isNull();
 		assertThat(actual.getVersion()).isZero();
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.execute("ALTER TABLE reservation_process DROP CONSTRAINT test_reject_claim");
+		}
+		var claim = store().claimInitialConfirmation(held.id(), 0, identity(owner),
+				new ConfirmationPatient("Ana", "Perez"), EXPIRY.minusSeconds(1));
+		var audit = processes.findById(held.id()).orElseThrow().getLastModifiedDate();
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.execute("ALTER TABLE reservation_process ADD CONSTRAINT test_reject_release CHECK (process_status <> 'HELD')");
+		}
+		assertThatThrownBy(() -> store().releaseInitialConfirmation(held.id(), claim.version(), identity(owner)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.STORAGE_FAILURE)).hasNoCause();
+		assertThat(store().findOwned(held.id(), identity(owner))).contains(claim);
+		assertThat(processes.findById(held.id()).orElseThrow().getLastModifiedDate()).isEqualTo(audit);
+	}
+
+	@Test
+	void pendingClaimRequiresBothPatientNamesExternalIdsAndExpirationInSql() throws SQLException {
+		var held = store().createHeld(identity(owner), selection(), new AppointmentHold("hold-claim-sql", "process-claim-sql", EXPIRY));
+		String update = "UPDATE reservation_process SET process_status='CONFIRMATION_PENDING', ";
+		for (String fields : List.of(
+				"patient_first_name=NULL, patient_last_name='Perez'",
+				"patient_first_name='Ana', patient_last_name=NULL",
+				"patient_first_name='Ana', patient_last_name=' '",
+				"patient_first_name='Ana', patient_last_name='Perez', hold_id=NULL",
+				"patient_first_name='Ana', patient_last_name='Perez', external_reservation_process_id=NULL",
+				"patient_first_name='Ana', patient_last_name='Perez', expires_at=NULL")) {
+			assertSqlRejected(update + fields + " WHERE id=" + held.id(), "23514");
+		}
+		assertThat(processes.findById(held.id()).orElseThrow().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
 	}
 
 	private static ReservationProcessEntity pending(UserEntity user) {
