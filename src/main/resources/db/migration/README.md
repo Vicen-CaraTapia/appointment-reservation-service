@@ -108,3 +108,99 @@ SQL y datos del paciente. Los modelos con datos personales redactan `toString()`
 Este puerto no realiza la confirmación REST. Un conflicto local después de una
 aceptación remota no demuestra un fracaso remoto ni autoriza repetir el POST;
 la coordinación y la incertidumbre siguen siendo responsabilidad de A7.3.
+
+## Intento durable de confirmación — V4 (A7.3, primer incremento)
+
+`V4__add_confirmation_attempt_state.sql` conserva V1–V3 y sus filas existentes.
+Agrega el estado **local** `CONFIRMATION_PENDING` a los constraints y exige los
+nombres del paciente, ambos IDs externos y vencimiento mientras el intento está
+pendiente. No agrega tablas, columnas de Kafka ni estados finales externos.
+
+Este incremento reemplaza la transición directa preparada en A7.1 por:
+
+```text
+HELD → CONFIRMATION_PENDING → WAITING_FOR_PHONE
+                  ↓
+                 HELD (solo si se sabe que no hubo aceptación remota)
+```
+
+- `claimInitialConfirmation` comprueba propietario, versión, estado `HELD` y
+  vencimiento observado; recibe el instante del reloj controlable de aplicación.
+  Guarda nombres y auditoría y entrega la observación con su nueva versión solo
+  después del commit local. El siguiente incremento podrá enviar el POST después
+  de obtener esta observación. La comprobación local no sustituye a cátedra ni
+  elimina la necesidad de volver a revisar el plazo antes del envío.
+- `recordInitialConfirmation` ahora exige el intento pendiente, su versión,
+  proceso externo y los mismos nombres reclamados. Guarda el vencimiento remoto
+  con precisión conservadora y pasa a `WAITING_FOR_PHONE`.
+- `releaseInitialConfirmation` exige la versión del intento pendiente, vuelve a
+  `HELD` y borra los nombres del intento. No extiende el vencimiento ni cambia IDs
+  o propietario. Solo debe invocarse si el POST no se envió o existe un rechazo
+  que permita afirmar que no hubo aceptación; nunca por un timeout, una respuesta
+  perdida, un 5xx o `RESERVATION_PROCESS_ALREADY_CONFIRMED`.
+
+Cada modificación usa una transacción local corta y control optimista. Dos
+solicitudes concurrentes no pueden obtener permiso de envío para la misma
+versión. Si se libera un intento y se reclama otro, la nueva versión impide que
+una respuesta o liberación vieja actúe sobre el intento nuevo.
+
+`CONFIRMATION_PENDING` no afirma que cátedra recibió la solicitud: puede representar
+un envío en curso o un resultado todavía no verificado, incluso una caída antes
+del POST. No se restablece automáticamente al reiniciar ni al vencer el hold:
+ninguna de esas condiciones demuestra que el efecto remoto no ocurrió. Una
+operación local rechazada por vencimiento tampoco inventa un estado externo.
+
+El caso de uso será responsable de elegir las transiciones según la evidencia
+remota, sin mantener una transacción durante REST. La conciliación y recuperación
+automática siguen fuera de este incremento. No hay todavía nuevas rutas HTTP,
+llamadas de confirmación desde aplicación, procesamiento Kafka ni reintentos.
+
+### Coordinación de aplicación del intento (A7.3)
+
+`ConfirmReservationProcessUseCase` usa la identidad autenticada y el ID local para
+consultar el proceso propio. No recibe holdId, ID de proceso externo, identidad
+de paciente ni versión desde un controlador. Los nombres llegan mediante
+`ConfirmationPatient`, con las validaciones contractuales y `toString()` redactado.
+
+Para un proceso `HELD`, comprueba el plazo con un `Clock` inyectable, consulta
+profesional y agenda vigentes a través de `ReservationSlotValidator`/Catalog y
+revisa nuevamente el plazo. No consulta ocupaciones ni crea otro hold. Después
+del commit de `claimInitialConfirmation`, vuelve a revisar el plazo antes del
+POST. Si todavía no se envió y ya venció, libera esa versión del intento y
+reporta el vencimiento observado; no afirma un fracaso remoto.
+
+`AppointmentHoldConfirmer` expresa el límite REST en términos de aplicación.
+`CatedraAppointmentHoldConfirmationAdapter` reutiliza el cliente de A7.2 y
+traduce sus resultados y errores, sin propagar DTO HTTP ni causas técnicas al
+núcleo. No se agregan credenciales, clientes HTTP alternativos ni nuevos filtros.
+El reloj de producción usa UTC, siguiendo las configuraciones existentes.
+
+Solo una aceptación correlacionada guarda `WAITING_FOR_PHONE` mediante el puerto
+de persistencia. La aplicación no suma un TTL ni redondea el vencimiento remoto.
+Catalog y el POST se ejecutan fuera de las transacciones de persistencia.
+
+Una repetición con los mismos nombres sobre `CONFIRMATION_PENDING` o
+`WAITING_FOR_PHONE` devuelve el estado observado sin consultar Catalog, revisar
+otra vez su plazo ni ejecutar un nuevo POST. Nombres distintos generan conflicto
+sin reemplazar los del intento. Si se pierde la carrera por la versión al
+reclamar, se consulta una vez el estado propio; se devuelve progreso compatible
+si existe, o se informa el conflicto. No se intenta reclamar o enviar en bucle.
+
+Los siete rechazos funcionales inequívocos del contrato permiten liberar el
+intento antes de informar su código. Un fallo de esa liberación se informa como
+fallo local y no habilita un POST nuevo. `RESERVATION_PROCESS_ALREADY_CONFIRMED`
+no libera el intento ni demuestra confirmación final: solo permite devolver una
+aceptación local que pueda verificarse con los mismos IDs y paciente; si no está
+verificada se mantiene el error controlado. Esa comprobación usa únicamente una
+lectura local, no un endpoint remoto inventado.
+
+Timeout, transporte, 5xx, respuestas incompatibles y rechazos HTTP no clasificados
+conservan el intento pendiente. Ante un fallo de guardado posterior a aceptación,
+se consulta una vez el estado local: una aceptación ya persistida y correlacionada
+puede devolverse; en otro caso se informa `LOCAL_STATE_FAILURE`, sin liberar ni
+reenviar. Los errores de autenticación técnica siguen separados de los del
+usuario final. No se conservan causas con diagnósticos externos.
+
+No hay todavía un controlador público de confirmación (A7.4), un consumidor
+Kafka (M-A8) ni recuperación automática (M-A10). El estado local de espera no es
+una reserva definitivamente confirmada.

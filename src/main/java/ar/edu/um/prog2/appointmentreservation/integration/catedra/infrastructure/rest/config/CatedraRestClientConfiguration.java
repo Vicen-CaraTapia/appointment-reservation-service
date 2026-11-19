@@ -18,9 +18,16 @@ import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure
 import ar.edu.um.prog2.appointmentreservation.availability.application.port.out.CurrentOccupancySource;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.adapter.CatedraAppointmentHoldAdapter;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.AppointmentHoldRequester;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.AppointmentHoldConfirmer;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.adapter.CatedraAppointmentHoldConfirmationAdapter;
 
 @Configuration(proxyBeanMethods = false)
 public class CatedraRestClientConfiguration {
+
+	@Bean
+	public AppointmentHoldConfirmer appointmentHoldConfirmer(CatedraAppointmentHoldConfirmationClient client) {
+		return new CatedraAppointmentHoldConfirmationAdapter(client);
+	}
 
 	@Bean
 	public CatedraAppointmentHoldConfirmationClient catedraAppointmentHoldConfirmationClient(CatedraRestClient rest) {

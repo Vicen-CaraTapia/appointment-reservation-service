@@ -63,7 +63,7 @@ class FlywayMigrationIT {
 	void productionStartupAppliesTheUserAndProcessModelsWithoutReapplyingThem() throws SQLException {
 		try (var context = start("classpath:db/migration")) {
 			assertThat(context.getBean(Flyway.class).info().applied())
-					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3");
+					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4");
 			assertThat(query("SELECT count(*) FROM " + schema
 					+ ".flyway_schema_history WHERE version='1' AND success AND type='SQL'"))
 					.isEqualTo(1);
@@ -101,7 +101,7 @@ class FlywayMigrationIT {
 					+ "','actor','HELD','hold-upgrade','process-upgrade',TIMESTAMPTZ '2026-11-19 15:00:00.123456Z')");
 		}
 		var flyway = Flyway.configure().dataSource(url, username, password).schemas(schema).defaultSchema(schema)
-				.createSchemas(false).locations("classpath:db/migration").load();
+				.createSchemas(false).locations("classpath:db/migration").target("3").load();
 		assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
 		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_process WHERE version=0"
 				+ " AND patient_first_name IS NULL AND patient_last_name IS NULL AND owner_user_id=" + userId))
@@ -110,6 +110,33 @@ class FlywayMigrationIT {
 				+ " AND hold_id='hold-upgrade' AND external_reservation_process_id='process-upgrade'"
 				+ " AND expires_at=TIMESTAMPTZ '2026-11-19 15:00:00.123456Z'"))
 				.isEqualTo(1);
+		assertThat(flyway.migrate().migrationsExecuted).isZero();
+	}
+
+	@Test
+	void v4PreservesExistingV3PendingHeldAndWaitingRowsAndTheirVersions() throws SQLException {
+		Flyway.configure().dataSource(url, username, password).schemas(schema).defaultSchema(schema)
+				.createSchemas(false).locations("classpath:db/migration").target("3").load().migrate();
+		long userId = insertUser("upgrade-v4", "upgrade-v4@example.test", "synthetic-test-hash");
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.executeUpdate("INSERT INTO " + schema + ".reservation_process"
+					+ " (owner_user_id,professional_id,appointment_date,start_time,external_patient_id,created_by,"
+					+ "process_status,hold_id,external_reservation_process_id,expires_at,patient_first_name,patient_last_name,version)"
+					+ " SELECT " + userId + ",202,DATE '2026-11-19',TIME '18:30','user-" + userId + "','actor',"
+					+ " state,'hold-v4-' || n,'process-v4-' || n,TIMESTAMPTZ '2026-11-19 15:00:00Z',first_name,last_name,n"
+					+ " FROM (VALUES (1,'PENDING_HOLD',NULL,NULL),(2,'HELD',NULL,NULL),"
+					+ " (3,'WAITING_FOR_PHONE','Ana','Perez')) AS previous(n,state,first_name,last_name)");
+		}
+		var flyway = Flyway.configure().dataSource(url, username, password).schemas(schema).defaultSchema(schema)
+				.createSchemas(false).locations("classpath:db/migration").load();
+		assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_process WHERE owner_user_id=" + userId
+				+ " AND hold_id='hold-v4-' || version AND external_reservation_process_id='process-v4-' || version"
+				+ " AND expires_at=TIMESTAMPTZ '2026-11-19 15:00:00Z' AND created_by='actor'"
+				+ " AND ((version=1 AND process_status='PENDING_HOLD' AND patient_first_name IS NULL)"
+				+ " OR (version=2 AND process_status='HELD' AND patient_first_name IS NULL)"
+				+ " OR (version=3 AND process_status='WAITING_FOR_PHONE' AND patient_first_name='Ana' AND patient_last_name='Perez'))"))
+				.isEqualTo(3);
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 

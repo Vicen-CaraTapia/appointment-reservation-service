@@ -1,8 +1,10 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -18,6 +20,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Held
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
@@ -52,10 +55,50 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 	}
 
 	@Override
+	public StoredReservationProcess claimInitialConfirmation(long id, long expectedVersion,
+			AuthenticatedReservationUser owner, ConfirmationPatient patient, Instant now) {
+		Objects.requireNonNull(patient, "Confirmation patient is required");
+		Objects.requireNonNull(now, "Current time is required");
+		return updateOwned(id, expectedVersion, owner, process -> {
+			if (process.getStatus() != ReservationProcessStatus.HELD) {
+				throw new ReservationProcessStateException(Reason.CONFLICT);
+			}
+			if (!process.getExpiresAt().isAfter(now)) {
+				throw new ReservationProcessStateException(Reason.EXPIRED);
+			}
+			process.claimConfirmation(patient.firstName(), patient.lastName(), owner.login());
+		});
+	}
+
+	@Override
+	public StoredReservationProcess releaseInitialConfirmation(long id, long expectedVersion, AuthenticatedReservationUser owner) {
+		return updateOwned(id, expectedVersion, owner, process -> {
+			if (process.getStatus() != ReservationProcessStatus.CONFIRMATION_PENDING) {
+				throw new ReservationProcessStateException(Reason.CONFLICT);
+			}
+			process.releaseConfirmation(owner.login());
+		});
+	}
+
+	@Override
 	public StoredReservationProcess recordInitialConfirmation(long id, long expectedVersion,
 			AuthenticatedReservationUser owner, InitialReservationConfirmation confirmation) {
-		requireIdentity(id, owner);
 		Objects.requireNonNull(confirmation, "Initial acceptance is required");
+		return updateOwned(id, expectedVersion, owner, process -> {
+			if (process.getStatus() != ReservationProcessStatus.CONFIRMATION_PENDING
+					|| !confirmation.reservationProcessId().equals(process.getExternalReservationProcessId())
+					|| !confirmation.patientFirstName().equals(process.getPatientFirstName())
+					|| !confirmation.patientLastName().equals(process.getPatientLastName())) {
+				throw new ReservationProcessStateException(Reason.CONFLICT);
+			}
+			process.markWaitingForPhone(confirmation.patientFirstName(), confirmation.patientLastName(),
+					confirmation.expiresAt(), owner.login());
+		});
+	}
+
+	private StoredReservationProcess updateOwned(long id, long expectedVersion, AuthenticatedReservationUser owner,
+			Consumer<ReservationProcessEntity> mutation) {
+		requireIdentity(id, owner);
 		if (expectedVersion < 0) {
 			throw new IllegalArgumentException("A nonnegative observation version is required");
 		}
@@ -63,13 +106,10 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 			return transactions.execute(status -> {
 				var process = processes.findByIdAndOwner_Id(id, owner.userId())
 						.orElseThrow(() -> new ReservationProcessStateException(Reason.NOT_FOUND));
-				if (process.getVersion() != expectedVersion
-						|| process.getStatus() != ReservationProcessStatus.HELD
-						|| !confirmation.reservationProcessId().equals(process.getExternalReservationProcessId())) {
+				if (process.getVersion() != expectedVersion) {
 					throw new ReservationProcessStateException(Reason.CONFLICT);
 				}
-				process.markWaitingForPhone(confirmation.patientFirstName(), confirmation.patientLastName(),
-						confirmation.expiresAt(), owner.login());
+				mutation.accept(process);
 				processes.flush();
 				return observation(process);
 			});
@@ -78,7 +118,7 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 		} catch (OptimisticLockingFailureException failure) {
 			throw new ReservationProcessStateException(Reason.CONFLICT);
 		} catch (RuntimeException failure) {
-			// Include failures at commit, not only flush; discard potentially sensitive diagnostics.
+			// Include commit failures and discard potentially sensitive persistence diagnostics.
 			throw new ReservationProcessStateException(Reason.STORAGE_FAILURE);
 		}
 	}

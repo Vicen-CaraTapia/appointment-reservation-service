@@ -4,5 +4,6 @@ package ar.edu.um.prog2.appointmentreservation.reservation.domain.model;
 public enum ReservationProcessStatus {
 	PENDING_HOLD,
 	HELD,
+	CONFIRMATION_PENDING,
 	WAITING_FOR_PHONE
 }
