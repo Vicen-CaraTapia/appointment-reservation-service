@@ -26,6 +26,11 @@ import org.hibernate.type.SqlTypes;
 
 import ar.edu.um.prog2.appointmentreservation.reservation.application.ExternalPatientId;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationActionEvent;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Decision;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Outcome;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Signal;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.UserEntity;
 
 @Entity
@@ -75,6 +80,15 @@ public class ReservationProcessEntity {
 
 	@Column(name = "patient_last_name", length = 100)
 	private String patientLastName;
+
+	@Column(name = "request_event_id", columnDefinition = "text")
+	private String requestEventId;
+
+	@Column(name = "external_reservation_id")
+	private Long externalReservationId;
+
+	@Column(name = "outcome_reason", columnDefinition = "text")
+	private String outcomeReason;
 
 	@Column(name = "created_by", nullable = false, length = 50, updatable = false)
 	private String createdBy;
@@ -177,6 +191,62 @@ public class ReservationProcessEntity {
 		this.status = ReservationProcessStatus.WAITING_FOR_PHONE;
 	}
 
+	/** Storage guards for validated evidence; the adapter commits this effect with its inbox receipt. */
+	public Decision applyAsynchronousEvidence(ReservationActionEvent event) {
+		Objects.requireNonNull(event, "Validated reservation event is required");
+		if (!event.externalProcessId().equals(externalReservationProcessId) || !event.holdId().equals(holdId)) {
+			return unchanged(Outcome.CONFLICT);
+		}
+		if (event.signal() == Signal.PHONE_REQUESTED) {
+			if (!status.isTerminal() && requestEventId != null) {
+				return unchanged(requestEventId.equals(event.eventId())
+						&& expiresAt.equals(event.expiresAt().truncatedTo(ChronoUnit.MICROS)) ? Outcome.IGNORE : Outcome.CONFLICT);
+			}
+		} else {
+			if (requestEventId == null) {
+				return unchanged(status.isTerminal() ? Outcome.CONFLICT : Outcome.DEFER);
+			}
+			if (!requestEventId.equals(event.requestEventId()) || !event.hasSupportedReason()) {
+				return unchanged(Outcome.CONFLICT);
+			}
+		}
+		if (event.signal() == Signal.RESERVATION_CONFIRMED) {
+			var selection = event.confirmedSelection();
+			if (selection.professionalId() != professionalId || !selection.date().equals(appointmentDate)
+					|| !selection.startTime().equals(startTime)
+					|| (externalReservationId != null && !externalReservationId.equals(event.externalReservationId()))) {
+				return unchanged(Outcome.CONFLICT);
+			}
+		}
+		if (status.isTerminal() && event.reason() != null && !event.reason().equals(outcomeReason)) {
+			return unchanged(Outcome.CONFLICT);
+		}
+		var decision = AsynchronousReservationTransitions.decide(status, event.signal());
+		if (decision.outcome() != Outcome.APPLY) { return decision; }
+		switch (event.signal()) {
+			case PHONE_REQUESTED -> {
+				requestEventId = event.eventId();
+				expiresAt = event.expiresAt().truncatedTo(ChronoUnit.MICROS);
+			}
+			case RESERVATION_CONFIRMED -> {
+				externalReservationId = event.externalReservationId();
+				outcomeReason = null;
+			}
+			case PHONE_REJECTED -> {
+				outcomeReason = event.reason();
+				expiresAt = event.expiresAt().truncatedTo(ChronoUnit.MICROS);
+			}
+			case PROCESS_EXPIRED, PROCESS_INVALID -> outcomeReason = event.reason();
+			default -> throw new IllegalStateException("Only incoming evidence may update event persistence");
+		}
+		status = decision.nextStatus();
+		lastModifiedBy = "catedra-events";
+		lastModifiedDate = Instant.now();
+		return decision;
+	}
+
+	private Decision unchanged(Outcome outcome) { return new Decision(outcome, status); }
+
 	private static String patientName(String value) {
 		if (value == null || value.isBlank() || value.length() < 2 || value.length() > 100) {
 			throw new IllegalArgumentException("Patient names must be nonblank and contain 2 to 100 characters");
@@ -221,6 +291,9 @@ public class ReservationProcessEntity {
 	public Instant getExpiresAt() { return expiresAt; }
 	public String getPatientFirstName() { return patientFirstName; }
 	public String getPatientLastName() { return patientLastName; }
+	public String getRequestEventId() { return requestEventId; }
+	public Long getExternalReservationId() { return externalReservationId; }
+	public String getOutcomeReason() { return outcomeReason; }
 	public String getCreatedBy() { return createdBy; }
 	public Instant getCreatedDate() { return createdDate; }
 	public String getLastModifiedBy() { return lastModifiedBy; }

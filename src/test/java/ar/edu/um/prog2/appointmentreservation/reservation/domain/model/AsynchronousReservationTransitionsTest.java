@@ -56,7 +56,15 @@ class AsynchronousReservationTransitionsTest {
 	static Stream<Arguments> earlyEvents() {
 		return Stream.of(PENDING_HOLD, HELD, CONFIRMATION_PENDING).flatMap(current ->
 				Stream.of(Signal.PHONE_REQUESTED, Signal.PHONE_REJECTED, Signal.RESERVATION_CONFIRMED,
-						Signal.PROCESS_EXPIRED, Signal.PROCESS_INVALID).map(signal -> Arguments.of(current, signal)));
+						Signal.PROCESS_EXPIRED, Signal.PROCESS_INVALID)
+						.filter(signal -> current != CONFIRMATION_PENDING || signal != Signal.PHONE_REQUESTED)
+						.map(signal -> Arguments.of(current, signal)));
+	}
+
+	@Test
+	void aTrustedCorrelatedRequestCanResolveAnUncertainInitialRestAcceptance() {
+		assertThat(decide(CONFIRMATION_PENDING, Signal.PHONE_REQUESTED))
+				.isEqualTo(new Decision(Outcome.APPLY, WAITING_FOR_PHONE));
 	}
 
 	@ParameterizedTest

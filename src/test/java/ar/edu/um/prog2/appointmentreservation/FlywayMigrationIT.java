@@ -63,13 +63,13 @@ class FlywayMigrationIT {
 	void productionStartupAppliesTheUserAndProcessModelsWithoutReapplyingThem() throws SQLException {
 		try (var context = start("classpath:db/migration")) {
 			assertThat(context.getBean(Flyway.class).info().applied())
-					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4");
+					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5");
 			assertThat(query("SELECT count(*) FROM " + schema
 					+ ".flyway_schema_history WHERE version='1' AND success AND type='SQL'"))
 					.isEqualTo(1);
 			assertThat(query("SELECT count(*) FROM information_schema.tables WHERE table_schema='"
 					+ schema + "' AND table_name <> 'flyway_schema_history'"))
-					.isEqualTo(4);
+					.isEqualTo(5);
 			assertThat(query("SELECT count(*) FROM " + schema + ".app_user")).isZero();
 			assertThat(query("SELECT count(*) FROM " + schema
 					+ ".authority WHERE name='ROLE_USER'")).isEqualTo(1);
@@ -128,7 +128,7 @@ class FlywayMigrationIT {
 					+ " (3,'WAITING_FOR_PHONE','Ana','Perez')) AS previous(n,state,first_name,last_name)");
 		}
 		var flyway = Flyway.configure().dataSource(url, username, password).schemas(schema).defaultSchema(schema)
-				.createSchemas(false).locations("classpath:db/migration").load();
+				.createSchemas(false).locations("classpath:db/migration").target("4").load();
 		assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
 		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_process WHERE owner_user_id=" + userId
 				+ " AND hold_id='hold-v4-' || version AND external_reservation_process_id='process-v4-' || version"

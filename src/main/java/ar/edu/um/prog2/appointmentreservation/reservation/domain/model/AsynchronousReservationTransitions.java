@@ -48,6 +48,10 @@ public final class AsynchronousReservationTransitions {
 			var terminal = terminalStatus(signal);
 			return keep(terminal != null && terminal != current ? Outcome.CONFLICT : Outcome.IGNORE, current);
 		}
+		if (current == ReservationProcessStatus.CONFIRMATION_PENDING && signal == Signal.PHONE_REQUESTED) {
+			// A trusted, exactly correlated request proves initial acceptance even if REST was lost.
+			return apply(ReservationProcessStatus.WAITING_FOR_PHONE);
+		}
 		boolean beforeInitialAcceptance = current == ReservationProcessStatus.PENDING_HOLD
 				|| current == ReservationProcessStatus.HELD || current == ReservationProcessStatus.CONFIRMATION_PENDING;
 		if (beforeInitialAcceptance) {

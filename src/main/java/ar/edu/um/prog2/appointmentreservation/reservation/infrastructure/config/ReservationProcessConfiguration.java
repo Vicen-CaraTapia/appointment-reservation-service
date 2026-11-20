@@ -18,9 +18,18 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.C
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.StartReservationProcessUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ConfirmReservationProcessUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.AppointmentHoldConfirmer;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationEventStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.JpaReservationEventAdapter;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.ReservationEventInboxJpaRepository;
 
 @Configuration(proxyBeanMethods = false)
 public class ReservationProcessConfiguration {
+
+	@Bean
+	public ReservationEventStore reservationEventStore(ReservationEventInboxJpaRepository inbox,
+			ReservationProcessJpaRepository processes, PlatformTransactionManager transactions) {
+		return new JpaReservationEventAdapter(inbox, processes, transactions);
+	}
 
 	@Bean
 	public ConfirmReservationProcessUseCase confirmReservationProcessUseCase(CurrentReservationUser currentUser,

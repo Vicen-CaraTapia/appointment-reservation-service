@@ -205,13 +205,13 @@ No hay todavía un controlador público de confirmación (A7.4), un consumidor
 Kafka (M-A8) ni recuperación automática (M-A10). El estado local de espera no es
 una reserva definitivamente confirmada.
 
-## Modelo asíncrono — A8.1, primer incremento
+## Modelo asíncrono — A8.1
 
 Esta sección concreta la propuesta aprobada para Open-003. Se basa en las
 secciones 15.1 y 15.4–15.9 de la referencia oficial v2 y en DD-008/DD-009.
-Es un modelo de dominio preparatorio: este incremento no agrega migraciones,
-columnas, consumidores, productores ni rutas. V1–V4 permanecen intactas y todavía
-no admiten los estados nuevos en PostgreSQL. Ningún flujo productivo los escribe.
+El primer incremento preparó la política pura. El segundo incorpora V5 y la
+persistencia de eventos descrita abajo. V1–V4 permanecen intactas. No se activan
+consumidores, productores ni nuevas rutas; la API actual no recibe eventos.
 
 ### Estados locales y evidencia
 
@@ -243,7 +243,9 @@ no sustituye esas comprobaciones.
 
 | Estado observado | Señal/evidencia | Resultado de la política |
 | --- | --- | --- |
-| `PENDING_HOLD`, `HELD` o `CONFIRMATION_PENDING` | Cualquiera de los cinco eventos entrantes de M-A8 | `DEFER`: conservar el evento pendiente; no inventar aceptación REST ni marcarlo aplicado. |
+| `PENDING_HOLD` o `HELD` | Cualquiera de los cinco eventos entrantes de M-A8 | `DEFER`: conservar el evento pendiente; no inventar aceptación ni marcarlo aplicado. |
+| `CONFIRMATION_PENDING` | Solicitud de teléfono autoritativa, con proceso/hold exactamente correlacionados | `APPLY` → `WAITING_FOR_PHONE`: consolidar aceptación inicial y guardar la solicitud atómicamente, sin otro POST REST. |
+| `CONFIRMATION_PENDING` | Otros resultados entrantes, todavía sin su solicitud correlacionada | `DEFER`, hasta disponer de la evidencia necesaria. |
 | Esos mismos estados | Aceptación local de envío o acknowledgment de publicación | `CONFLICT`: no se ha habilitado ese paso del flujo. |
 | `WAITING_FOR_PHONE` | `AdditionalInformationRequested` válido y correlacionado | `APPLY`, conservando el estado y registrando la solicitud, correlación y plazo. |
 | `WAITING_FOR_PHONE` | Nueva intención de teléfono validada y persistida | `APPLY` → `PHONE_SUBMISSION_PENDING`. |
@@ -276,7 +278,7 @@ también coinciden; la aplicación debe detectar una contradicción antes de usa
 la decisión de estado. No se decide por `message`, `detail` ni por el simple
 orden de `occurredAt`.
 
-### Persistencia y continuación que faltan implementar
+### Requisitos de persistencia y continuación
 
 - Inbox específica de eventos de reserva: distinguir pendiente, aplicado y
   tratamiento incompatible/ignorado, sin equiparar recepción con aplicación.
@@ -292,11 +294,10 @@ orden de `occurredAt`.
   pendientes por proceso después del commit de aceptación y mediante revisión
   acotada al reiniciar/periódicamente, sin bloquear indefinidamente una partición.
   Los límites y la política de errores se concretarán antes de activar el listener.
-  El barrido por sí solo no resuelve un `CONFIRMATION_PENDING` cuyo REST quedó
-  incierto: deberá concretarse cómo consolidar la aceptación con evidencia Kafka
-  autoritativa y correlacionada, antes de aplicar la solicitud pendiente, sin
-  reenviar el POST. La política de estados de este incremento no implementa esa
-  coordinación ni debe invocarse en bucle esperando que cambie el estado solo.
+  La regla revisada permite que la solicitud autoritativa resuelva un
+  `CONFIRMATION_PENDING` correlacionado aunque REST haya quedado incierto. La
+  operación local ya puede guardar esa evidencia; todavía no existe el listener
+  ni el coordinador que la invoque y continúe pendientes automáticamente.
 - Intención de publicación específica y durable: conservar `eventId`,
   `requestEventId`, correlación, teléfono normalizado y progreso del envío.
   Repetir esa intención conserva su identidad; corregir después de rechazo crea
@@ -313,5 +314,72 @@ expiración ni convierte un resultado incierto en fracaso definitivo.
 La integración deberá revisar la carrera con A7.3 y su respuesta HTTP: un guardado
 REST tardío no podrá sobrescribir progreso Kafka o estados finales. En este primer
 incremento A7.3, su API y sus respuestas siguen sin cambios; todavía no existe un
-consumidor capaz de producir esa carrera. Las decisiones anteriores no equivalen
-a haber implementado idempotencia, outbox, recuperación ni persistencia nueva.
+consumidor capaz de producir esa carrera. La persistencia descrita abajo no activa
+outbox, recuperación automática ni procesamiento Kafka.
+
+### V5 — Proceso e inbox específica de reservas
+
+`V5__add_asynchronous_reservation_event_persistence.sql` incorpora los estados
+aprobados al CHECK del proceso y agrega:
+
+- `request_event_id TEXT`, único cuando está presente: identifica la solicitud
+  original; no es el ID del envío corregido ni un ID de usuario.
+- `external_reservation_id BIGINT`, positivo y único cuando está presente. Es
+  obligatorio exclusivamente en `CONFIRMED`, separado del ID local y del proceso
+  externo. La confirmación debe coincidir con profesional/fecha/hora persistidos.
+- `outcome_reason TEXT`: código controlado, obligatorio para expiración/invalidez
+  y disponible para rechazo corregible. No contiene `message` ni `detail`.
+
+Las restricciones preservan nombres, IDs externos y plazo en las fases que los
+requieren. El envío pendiente y la espera de resultado exigen solicitud original.
+La intención durable del envío y sus transiciones se implementarán por separado;
+esta migración no demuestra que se haya publicado un teléfono.
+
+`reservation_event_inbox` usa `event_id` como PK y conserva un snapshot validado
+de aplicación, su huella, el proceso externo y la fecha de recepción. El vínculo
+al ID local es nullable mientras falta correlación; es una FK de Appointment,
+sin relación con Catalog ni propiedad tomada del payload.
+
+Los estados de receipt son `PENDING`, `APPLIED`, `IGNORED` y `CONFLICT`. Aplicado,
+ignorado o incompatible requieren vínculo local y fecha de tratamiento. La
+recepción por sí sola no equivale a aplicación. Los pendientes pueden consultarse
+por proceso en lotes de 1–100, ordenados por recepción/ID, sin usar ese orden como
+regla para sobrescribir resultados. No hay un scheduler en este incremento.
+
+El snapshot contiene solo evidencia funcional: señal, IDs, tiempos y, según el
+resultado, selección confirmada, ID de reserva o código de razón. No incluye
+usuario/propietario aportado por el evento, JWT, nombres, teléfono ni texto libre.
+El adaptador Kafka futuro deberá validar antes grupo técnico cuando exista,
+message key, versión, requiredField y tipos; este modelo no reemplaza esa frontera.
+
+La huella SHA-256 usa un formato interno v1 con propiedades ordenadas y un mapper
+privado estable: no depende del naming o pretty-printing de HTTP. El snapshot
+conserva la precisión original, incluidos nanosegundos, mientras el vencimiento
+del proceso se trunca conservadoramente a microsegundos. Una evolución del formato
+requiere compatibilidad/migración explícita; no debe cambiarse silenciosamente.
+
+La inserción usa `ON CONFLICT DO NOTHING` y luego bloquea el receipt. Una entrega
+idéntica reutiliza su resultado sin repetir auditoría funcional ni versión del
+proceso. Si cambia el contenido, se conserva el snapshot y estado originales y
+se registra una bandera, huella incompatible y fecha. Esa bandera impide aplicar
+el pendiente y lo excluye del barrido automático: queda para revisión explícita.
+Incluso si el original estaba aplicado, no se reemplaza por el segundo contenido.
+
+`ReservationEventStore.applyPending` bloquea primero el receipt y luego el proceso
+correlacionado. `ReservationProcessEntity` refuerza correlación e invariantes con
+la política pura; el adaptador guarda el efecto y el receipt en una transacción.
+Solo devuelve éxito después del commit, incluyendo sus fallos diferidos. El
+timeout técnico de la transacción es 10 segundos; no hay retry automático.
+
+Un proceso ausente o una solicitud todavía no disponible dejan `PENDING`; un
+hold/request/selección incompatibles quedan como conflicto durable. Por ahora se
+interpretan los códigos explícitos de los ejemplos oficiales `INVALID_PHONE_NUMBER`,
+`HOLD_EXPIRED` y `REQUEST_EVENT_MISMATCH`. Otros códigos bien formados se conservan
+como `CONFLICT` para revisión contractual; no se asumen válidos ni se descartan.
+
+El actor de aplicación es `catedra-events`; se conserva el propietario y los datos
+del paciente de la fila original. Un resultado terminal compatible puede ignorarse
+durablemente sin tocar la versión del proceso. Uno contradictorio no lo reemplaza.
+Ninguna de estas operaciones confirma offsets, consulta Catalog, llama REST ni
+publica mensajes. La continuación tras reinicio se prueba mediante el puerto,
+pero su ejecución automática y la política de mensajes inválidos pertenecen a A8.2.
