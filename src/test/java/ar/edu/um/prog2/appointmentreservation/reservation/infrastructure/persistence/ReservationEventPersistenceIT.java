@@ -23,14 +23,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.event.CatedraAppointmentActionDecoder;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationEventStorageException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
@@ -46,6 +50,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.NewP
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PhoneSubmissionIntent;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.PhoneSubmissionStateException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ProcessReservationActionUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Signal;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
@@ -74,6 +79,7 @@ class ReservationEventPersistenceIT {
 	private ReservationProcessStore store;
 	private ReservationProcessJpaRepository processes;
 	private PhoneSubmissionStore phones;
+	private ProcessReservationActionUseCase actions;
 	private boolean prettyHttpJson;
 
 	@BeforeEach
@@ -129,6 +135,7 @@ class ReservationEventPersistenceIT {
 		store = context.getBean(ReservationProcessStore.class);
 		processes = context.getBean(ReservationProcessJpaRepository.class);
 		phones = context.getBean(PhoneSubmissionStore.class);
+		actions = context.getBean(ProcessReservationActionUseCase.class);
 	}
 
 	@AfterEach
@@ -636,6 +643,107 @@ class ReservationEventPersistenceIT {
 		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.PHONE_SUBMISSION_PENDING);
 		execute("DROP TRIGGER test_reject_publication ON " + schema + ".reservation_phone_submission");
 		assertThat(phones.recordPublished("phone", TIME.plusSeconds(1)).state()).isEqualTo(PhoneSubmissionIntent.State.PUBLISHED);
+	}
+
+	@ParameterizedTest
+	@CsvSource({"AdditionalInformationRequested,WAITING_FOR_PHONE", "AppointmentConfirmed,CONFIRMED",
+			"AdditionalInformationRejected,WAITING_FOR_PHONE", "AppointmentProcessExpired,EXPIRED", "AppointmentProcessInvalid,INVALID"})
+	void decodedActionsReachTheOwnedProcessThroughTheApplicationUseCase(String type, ReservationProcessStatus expected) {
+		claim();
+		if (!type.equals("AdditionalInformationRequested")) {
+			actions.process(decodeAction("AdditionalInformationRequested"));
+		}
+		if (type.equals("AdditionalInformationRejected")) { prepare("phone", "00000001234"); }
+		var receipt = actions.process(decodeAction(type));
+		assertThat(receipt.state()).isEqualTo(State.APPLIED);
+		assertThat(receipt.localProcessId()).isEqualTo(id);
+		assertThat(process().getStatus()).isEqualTo(expected);
+		assertThat(process().getOwner().getId()).isEqualTo(ownerId);
+		assertThat(process().getRequestEventId()).isEqualTo("request");
+		assertThat(process().getPatientFirstName()).isEqualTo("Ana");
+		assertThat(process().getPatientLastName()).isEqualTo("Perez");
+		assertThat(process().getExpiresAt()).isEqualTo(EXPIRY.truncatedTo(ChronoUnit.MICROS));
+		assertThat(process().getExternalReservationId()).isEqualTo(type.equals("AppointmentConfirmed") ? 8251L : null);
+	}
+
+	@Test
+	void processingNewRequestContinuesAnEarlierResultWithoutWaitingForRedelivery() {
+		claim();
+		var confirmation = decodeAction("AppointmentConfirmed");
+		assertThat(actions.process(confirmation).state()).isEqualTo(State.PENDING);
+		assertThat(actions.process(decodeAction("AdditionalInformationRequested")).state()).isEqualTo(State.APPLIED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+		assertThat(process().getExternalReservationId()).isEqualTo(8251L);
+		assertThat(events.findPending("process", 10)).isEmpty();
+		long version = process().getVersion();
+		assertThat(actions.process(confirmation).state()).isEqualTo(State.APPLIED);
+		assertThat(process().getVersion()).isEqualTo(version);
+	}
+
+	@Test
+	void theApplicationCanResumeDurableEarlyEvidenceAfterRestartAndRestClaim() {
+		assertThat(actions.process(decodeAction("AdditionalInformationRequested")).state()).isEqualTo(State.PENDING);
+		context.close(); startContext();
+		claim();
+		assertThat(actions.resumePending("process", 1)).singleElement().satisfies(receipt ->
+				assertThat(receipt.state()).isEqualTo(State.APPLIED));
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(process().getOwner().getId()).isEqualTo(ownerId);
+	}
+
+	@Test
+	void incompatibleWireRedeliveryCannotReplaceAppliedRequestOrItsDeadline() {
+		claim();
+		actions.process(decodeAction("AdditionalInformationRequested"));
+		var before = process();
+		var wire = wireAction("AdditionalInformationRequested").put("expiresAt", EXPIRY.plusSeconds(60).toString());
+		var result = actions.process(new CatedraAppointmentActionDecoder("test-project").decode("process", wire.toString()));
+		assertThat(result.contentConflict()).isTrue();
+		assertThat(process().getVersion()).isEqualTo(before.getVersion());
+		assertThat(process().getExpiresAt()).isEqualTo(before.getExpiresAt());
+	}
+
+	@Test
+	void failedEffectCommitLeavesReceivedEvidencePendingAndAReplayCanCompleteIt() throws Exception {
+		claim();
+		execute("CREATE FUNCTION " + schema + ".reject_action_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "IF NEW.handling_status='APPLIED' THEN RAISE EXCEPTION USING MESSAGE='test-only-private-commit-diagnostic',"
+				+ "ERRCODE='23514'; END IF; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER test_reject_action_commit AFTER UPDATE ON " + schema
+				+ ".reservation_event_inbox DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_action_commit()");
+		var request = decodeAction("AdditionalInformationRequested");
+		assertThatThrownBy(() -> actions.process(request)).isInstanceOf(ReservationEventStorageException.class).hasNoCause();
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(events.findPending("process", 10)).containsExactly("request");
+		execute("DROP TRIGGER test_reject_action_commit ON " + schema + ".reservation_event_inbox");
+		assertThat(actions.process(request).state()).isEqualTo(State.APPLIED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+	}
+
+	private static ReservationActionEvent decodeAction(String type) {
+		return new CatedraAppointmentActionDecoder("test-project").decode("process", wireAction(type).toString());
+	}
+
+	private static ObjectNode wireAction(String type) {
+		var input = new JsonMapper().createObjectNode();
+		input.put("eventId", type.equals("AdditionalInformationRequested") ? "request" : type)
+				.put("eventType", type).put("schemaVersion", 1).put("reservationProcessId", "process")
+				.put("holdId", "hold").put("occurredAt", TIME.toString());
+		if (!type.equals("AdditionalInformationRequested")) {
+			input.put("groupId", "test-project").put("requestEventId", "request");
+		}
+		switch (type) {
+			case "AdditionalInformationRequested" -> input.put("requiredField", "PHONE_NUMBER")
+					.put("message", "Presentation only").put("expiresAt", EXPIRY.toString());
+			case "AppointmentConfirmed" -> input.put("reservationId", 8251).put("professionalId", 202)
+					.put("date", "2030-01-03").put("startTime", "18:00").put("status", "CONFIRMED");
+			case "AdditionalInformationRejected" -> input.put("reason", "INVALID_PHONE_NUMBER")
+					.put("message", "Presentation only").put("expiresAt", EXPIRY.toString());
+			case "AppointmentProcessExpired" -> input.put("reason", "HOLD_EXPIRED");
+			case "AppointmentProcessInvalid" -> input.put("reason", "REQUEST_EVENT_MISMATCH");
+			default -> throw new IllegalArgumentException("Unsupported test fixture");
+		}
+		return input;
 	}
 
 	private PhoneSubmissionIntent prepare(String eventId, String phone) {
