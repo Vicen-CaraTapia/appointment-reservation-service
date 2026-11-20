@@ -3,6 +3,7 @@ package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persis
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 import jakarta.persistence.Column;
@@ -18,6 +19,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
@@ -33,6 +35,10 @@ public class ReservationProcessEntity {
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
+
+	@Version
+	@Column(name = "version", nullable = false)
+	private Long version;
 
 	@ManyToOne(fetch = FetchType.LAZY, optional = false)
 	@JoinColumn(name = "owner_user_id", nullable = false, updatable = false)
@@ -63,6 +69,12 @@ public class ReservationProcessEntity {
 
 	@Column(name = "expires_at")
 	private Instant expiresAt;
+
+	@Column(name = "patient_first_name", length = 100)
+	private String patientFirstName;
+
+	@Column(name = "patient_last_name", length = 100)
+	private String patientLastName;
 
 	@Column(name = "created_by", nullable = false, length = 50, updatable = false)
 	private String createdBy;
@@ -116,6 +128,62 @@ public class ReservationProcessEntity {
 		this.status = ReservationProcessStatus.HELD;
 	}
 
+	/** Claims the local attempt before any remote confirmation is sent. */
+	public void claimConfirmation(String firstName, String lastName, String modifiedBy) {
+		if (!ReservationProcessStatus.HELD.equals(status)) {
+			throw new IllegalStateException("Only a held process can start initial confirmation");
+		}
+		String checkedFirstName = patientName(firstName);
+		String checkedLastName = patientName(lastName);
+		String checkedActor = auditActor(modifiedBy);
+		this.patientFirstName = checkedFirstName;
+		this.patientLastName = checkedLastName;
+		this.lastModifiedBy = checkedActor;
+		this.lastModifiedDate = Instant.now();
+		this.status = ReservationProcessStatus.CONFIRMATION_PENDING;
+	}
+
+	/** Caller must know the POST was not sent or was definitively rejected, never merely timed out. */
+	public void releaseConfirmation(String modifiedBy) {
+		if (!ReservationProcessStatus.CONFIRMATION_PENDING.equals(status)) {
+			throw new IllegalStateException("Only a pending confirmation can be released");
+		}
+		String checkedActor = auditActor(modifiedBy);
+		this.patientFirstName = null;
+		this.patientLastName = null;
+		this.lastModifiedBy = checkedActor;
+		this.lastModifiedDate = Instant.now();
+		this.status = ReservationProcessStatus.HELD;
+	}
+
+	/** Completes the claimed attempt; it does not represent a final appointment confirmation. */
+	public void markWaitingForPhone(String firstName, String lastName, Instant confirmedExpiry, String modifiedBy) {
+		if (!ReservationProcessStatus.CONFIRMATION_PENDING.equals(status)) {
+			throw new IllegalStateException("Only a claimed process can receive its initial confirmation");
+		}
+		String checkedFirstName = patientName(firstName);
+		String checkedLastName = patientName(lastName);
+		if (!checkedFirstName.equals(patientFirstName) || !checkedLastName.equals(patientLastName)) {
+			throw new IllegalStateException("Accepted patient details must match the claimed attempt");
+		}
+		Instant checkedExpiry = Objects.requireNonNull(confirmedExpiry, "Confirmation expiration is required")
+				.truncatedTo(ChronoUnit.MICROS);
+		String checkedActor = auditActor(modifiedBy);
+		this.patientFirstName = checkedFirstName;
+		this.patientLastName = checkedLastName;
+		this.expiresAt = checkedExpiry;
+		this.lastModifiedBy = checkedActor;
+		this.lastModifiedDate = Instant.now();
+		this.status = ReservationProcessStatus.WAITING_FOR_PHONE;
+	}
+
+	private static String patientName(String value) {
+		if (value == null || value.isBlank() || value.length() < 2 || value.length() > 100) {
+			throw new IllegalArgumentException("Patient names must be nonblank and contain 2 to 100 characters");
+		}
+		return value;
+	}
+
 	@PrePersist
 	private void recordCreationDate() {
 		createdDate = Instant.now();
@@ -141,6 +209,7 @@ public class ReservationProcessEntity {
 	}
 
 	public Long getId() { return id; }
+	public Long getVersion() { return version; }
 	public UserEntity getOwner() { return owner; }
 	public long getProfessionalId() { return professionalId; }
 	public LocalDate getAppointmentDate() { return appointmentDate; }
@@ -150,6 +219,8 @@ public class ReservationProcessEntity {
 	public String getExternalReservationProcessId() { return externalReservationProcessId; }
 	public ReservationProcessStatus getStatus() { return status; }
 	public Instant getExpiresAt() { return expiresAt; }
+	public String getPatientFirstName() { return patientFirstName; }
+	public String getPatientLastName() { return patientLastName; }
 	public String getCreatedBy() { return createdBy; }
 	public Instant getCreatedDate() { return createdDate; }
 	public String getLastModifiedBy() { return lastModifiedBy; }

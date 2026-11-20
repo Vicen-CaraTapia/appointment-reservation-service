@@ -1,6 +1,12 @@
 server:
   port: ${SERVER_PORT:8082}
 
+logging:
+  level:
+    # PostgreSQL error diagnostics can include entire rejected rows and patient data.
+    # Application handlers retain controlled error codes without raw SQL causes.
+    org.hibernate.orm.jdbc.error: "OFF"
+
 catalog:
   integration:
     base-url: ${CATALOG_BASE_URL:}

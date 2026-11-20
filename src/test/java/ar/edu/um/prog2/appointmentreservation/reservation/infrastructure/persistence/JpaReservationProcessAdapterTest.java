@@ -3,17 +3,23 @@ package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persis
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationPersistenceException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException.Reason;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
@@ -26,6 +32,7 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.re
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -115,6 +122,231 @@ class JpaReservationProcessAdapterTest {
 		assertThatThrownBy(() -> adapter.createHeld(missing == 0 ? null : OWNER,
 				missing == 1 ? null : SELECTION, missing == 2 ? null : HOLD)).isInstanceOf(NullPointerException.class);
 		verifyNoInteractions(manager, users, processes);
+	}
+
+	@Test
+	void returnsADetachedOwnedObservationWithinAReadOnlyTransaction() {
+		var entity = prepareOwnedHold();
+		var result = adapter.findOwned(123, OWNER).orElseThrow();
+		assertThat(result.id()).isEqualTo(123);
+		assertThat(result.version()).isZero();
+		assertThat(result.status()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(result.selection()).isEqualTo(SELECTION);
+		assertThat(result.externalPatientId()).isEqualTo("user-42");
+		assertThat(result.hold().reservationProcessId()).isEqualTo(HOLD.reservationProcessId());
+		assertThat(result.patientFirstName()).isNull();
+		assertThat(result.patientLastName()).isNull();
+		verify(manager).getTransaction(argThat(definition -> definition.isReadOnly()));
+		verify(manager).commit(transaction);
+		assertThat(entity.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	@Test
+	void mapsPendingProcessesWithoutInventingAHold() {
+		preparePersistence();
+		var entity = new ReservationProcessEntity(users.getReferenceById(42L), SELECTION.professionalId(),
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		ReflectionTestUtils.setField(entity, "id", 123L);
+		ReflectionTestUtils.setField(entity, "version", 0L);
+		when(processes.findByIdAndOwner_Id(123, 42)).thenReturn(Optional.of(entity));
+		var result = adapter.findOwned(123, OWNER).orElseThrow();
+		assertThat(result.status()).isEqualTo(ReservationProcessStatus.PENDING_HOLD);
+		assertThat(result.hold()).isNull();
+	}
+
+	@Test
+	void missingOrForeignOwnedProcessesDoNotTriggerAnUnscopedLookup() {
+		preparePersistence();
+		when(processes.findByIdAndOwner_Id(123, 42)).thenReturn(Optional.empty());
+		assertThat(adapter.findOwned(123, OWNER)).isEmpty();
+		verify(processes, never()).findById(any());
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void recordsConfirmationAndReturnsOnlyAfterCommit() {
+		prepareClaimedHold();
+		var result = adapter.recordInitialConfirmation(123, 0, OWNER, confirmation());
+		assertThat(result.status()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(result.patientFirstName()).isEqualTo("Ana");
+		assertThat(result.patientLastName()).isEqualTo("Perez");
+		assertThat(result.hold().expiresAt()).isEqualTo(Instant.parse("2026-11-17T22:28:18.514830Z"));
+		var order = inOrder(manager, processes);
+		order.verify(manager).getTransaction(any());
+		order.verify(processes).findByIdAndOwner_Id(123, 42);
+		order.verify(processes).flush();
+		order.verify(manager).commit(transaction);
+	}
+
+	@Test
+	void writeOfAbsentOrForeignOwnedIdHasTheSameSafeNotFoundOutcome() {
+		preparePersistence();
+		when(processes.findByIdAndOwner_Id(123, 42)).thenReturn(Optional.empty());
+		assertStateFailure(Reason.NOT_FOUND);
+		verify(processes, never()).findById(any());
+		verify(processes, never()).flush();
+		verify(manager).rollback(transaction);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"version", "status", "external-id"})
+	void refusesStaleOrIncompatibleObservationsBeforeChangingTheEntity(String mismatch) {
+		var entity = prepareClaimedHold();
+		if (mismatch.equals("version")) {
+			ReflectionTestUtils.setField(entity, "version", 1L);
+		} else if (mismatch.equals("status")) {
+			ReflectionTestUtils.setField(entity, "status", ReservationProcessStatus.PENDING_HOLD);
+		} else {
+			ReflectionTestUtils.setField(entity, "externalReservationProcessId", "other-process");
+		}
+		assertStateFailure(Reason.CONFLICT);
+		assertThat(entity.getPatientFirstName()).isEqualTo("Ana");
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void translatesOptimisticConflictWithoutLeakingItsDiagnostics() {
+		prepareClaimedHold();
+		doThrow(new OptimisticLockingFailureException("private diagnostic")).when(processes).flush();
+		assertStateFailure(Reason.CONFLICT);
+		verify(manager).rollback(transaction);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"begin", "read", "flush", "commit"})
+	void sanitizesStorageFailureAtEveryWriteTransactionStage(String stage) {
+		prepareClaimedHold();
+		var failure = new TransactionSystemException("private diagnostic with patient input and credentials");
+		switch (stage) {
+			case "begin" -> when(manager.getTransaction(any())).thenThrow(failure);
+			case "read" -> when(processes.findByIdAndOwner_Id(123, 42)).thenThrow(failure);
+			case "flush" -> doThrow(failure).when(processes).flush();
+			case "commit" -> doThrow(failure).when(manager).commit(transaction);
+			default -> throw new IllegalArgumentException("Unexpected test stage");
+		}
+		assertStateFailure(Reason.STORAGE_FAILURE);
+	}
+
+	@Test
+	void readFailureDoesNotLookLikeAnEmptyOwnedResultOrExposeItsCause() {
+		prepareOwnedHold();
+		when(processes.findByIdAndOwner_Id(123, 42)).thenThrow(new TransactionSystemException("private diagnostic"));
+		assertThatThrownBy(() -> adapter.findOwned(123, OWNER))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.STORAGE_FAILURE))
+				.hasNoCause().hasMessageNotContaining("private diagnostic");
+	}
+
+	@Test
+	void rejectsInvalidWriteIdentityAndMissingConfirmationBeforeAccessingStorage() {
+		assertThatThrownBy(() -> adapter.findOwned(0, OWNER)).isInstanceOf(IllegalArgumentException.class);
+		assertThatThrownBy(() -> adapter.findOwned(123, null)).isInstanceOf(NullPointerException.class);
+		assertThatThrownBy(() -> adapter.recordInitialConfirmation(123, -1, OWNER, confirmation()))
+				.isInstanceOf(IllegalArgumentException.class);
+		assertThatThrownBy(() -> adapter.recordInitialConfirmation(123, 0, OWNER, null))
+				.isInstanceOf(NullPointerException.class);
+		verifyNoInteractions(manager, users, processes);
+	}
+
+	@Test
+	void commitsTheClaimBeforeReturningItsObservationAndDoesNotExtendExpiration() {
+		prepareOwnedHold();
+		var result = adapter.claimInitialConfirmation(123, 0, OWNER, new ConfirmationPatient("Ana", "Perez"), HOLD.expiresAt().minusSeconds(1));
+		assertThat(result.status()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(result.patientFirstName()).isEqualTo("Ana");
+		assertThat(result.patientLastName()).isEqualTo("Perez");
+		assertThat(result.hold().expiresAt()).isEqualTo(HOLD.expiresAt());
+		var order = inOrder(manager, processes);
+		order.verify(manager).getTransaction(any());
+		order.verify(processes).findByIdAndOwner_Id(123, 42);
+		order.verify(processes).flush();
+		order.verify(manager).commit(transaction);
+	}
+
+	@ParameterizedTest
+	@ValueSource(longs = {0, 1})
+	void rejectsClaimAtOrAfterTheObservedDeadlineWithoutMutation(long nanosAfterDeadline) {
+		var entity = prepareOwnedHold();
+		assertThatThrownBy(() -> adapter.claimInitialConfirmation(123, 0, OWNER,
+				new ConfirmationPatient("Ana", "Perez"), HOLD.expiresAt().plusNanos(nanosAfterDeadline)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.EXPIRED));
+		assertThat(entity.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(entity.getPatientFirstName()).isNull();
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void refusesASecondClaimAndProtectsTheOriginalPatient() {
+		var entity = prepareClaimedHold();
+		assertThatThrownBy(() -> adapter.claimInitialConfirmation(123, 0, OWNER,
+				new ConfirmationPatient("Other", "Patient"), HOLD.expiresAt().minusSeconds(1)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+		assertThat(entity.getPatientFirstName()).isEqualTo("Ana");
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void doesNotReturnAPostPermitIfClaimCommitFails() {
+		prepareOwnedHold();
+		doThrow(new TransactionSystemException("private diagnostic")).when(manager).commit(transaction);
+		assertThatThrownBy(() -> adapter.claimInitialConfirmation(123, 0, OWNER,
+				new ConfirmationPatient("Ana", "Perez"), HOLD.expiresAt().minusSeconds(1)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.STORAGE_FAILURE))
+				.hasNoCause().hasMessageNotContaining("private diagnostic");
+	}
+
+	@Test
+	void releasesOnlyAClaimedVersionAndClearsPatientDetails() {
+		prepareClaimedHold();
+		var result = adapter.releaseInitialConfirmation(123, 0, OWNER);
+		assertThat(result.status()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(result.patientFirstName()).isNull();
+		assertThat(result.patientLastName()).isNull();
+		assertThat(result.hold().expiresAt()).isEqualTo(HOLD.expiresAt());
+		verify(manager).commit(transaction);
+	}
+
+	@Test
+	void refusesReleaseOfAnUnclaimedProcessAndAcceptanceForDifferentPatientNames() {
+		var entity = prepareOwnedHold();
+		assertThatThrownBy(() -> adapter.releaseInitialConfirmation(123, 0, OWNER))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(Reason.CONFLICT));
+		entity.claimConfirmation("Different", "Patient", "alice");
+		assertStateFailure(Reason.CONFLICT);
+		assertThat(entity.getPatientFirstName()).isEqualTo("Different");
+		verify(processes, never()).flush();
+	}
+
+	private ReservationProcessEntity prepareClaimedHold() {
+		var entity = prepareOwnedHold();
+		entity.claimConfirmation("Ana", "Perez", "alice");
+		return entity;
+	}
+
+	private ReservationProcessEntity prepareOwnedHold() {
+		preparePersistence();
+		var entity = new ReservationProcessEntity(users.getReferenceById(42L), SELECTION.professionalId(),
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		entity.markHeld(HOLD.holdId(), HOLD.reservationProcessId(), HOLD.expiresAt(), "alice");
+		ReflectionTestUtils.setField(entity, "id", 123L);
+		ReflectionTestUtils.setField(entity, "version", 0L);
+		when(processes.findByIdAndOwner_Id(123, 42)).thenReturn(Optional.of(entity));
+		return entity;
+	}
+
+	private static InitialReservationConfirmation confirmation() {
+		return new InitialReservationConfirmation(HOLD.reservationProcessId(), "Ana", "Perez", HOLD.expiresAt());
+	}
+
+	private void assertStateFailure(Reason reason) {
+		assertThatThrownBy(() -> adapter.recordInitialConfirmation(123, 0, OWNER, confirmation()))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						failure -> assertThat(failure.reason()).isEqualTo(reason))
+				.hasNoCause().hasMessageNotContaining("private diagnostic");
 	}
 
 	private void preparePersistence() {

@@ -128,6 +128,135 @@ class ReservationProcessEntityTest {
 				.isInstanceOf(IllegalArgumentException.class);
 	}
 
+	@Test
+	void recordsInitialAcceptanceWithPatientDetailsAndAuthoritativeMicrosecondExpiry() {
+		var process = claimed(" Ana ", "Pérez");
+		var expiry = Instant.parse("2026-11-19T12:34:56.123456789Z");
+		process.markWaitingForPhone(" Ana ", "Pérez", expiry, "confirmation-adapter");
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(process.getPatientFirstName()).isEqualTo(" Ana ");
+		assertThat(process.getPatientLastName()).isEqualTo("Pérez");
+		assertThat(process.getExpiresAt()).isEqualTo(Instant.parse("2026-11-19T12:34:56.123456Z"))
+				.isBeforeOrEqualTo(expiry);
+		assertThat(process.getHoldId()).isEqualTo("hold-first");
+		assertThat(process.getExternalReservationProcessId()).isEqualTo("process-first");
+		assertThat(process.getExternalPatientId()).isEqualTo("user-42");
+		assertThat(process.getOwner().getId()).isEqualTo(42L);
+		assertThat(process.getLastModifiedBy()).isEqualTo("confirmation-adapter");
+		assertThat(process.getLastModifiedDate()).isNotNull();
+		assertThat(process.getVersion()).isNull();
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = {2, 100})
+	void acceptsBothPatientNameLengthBoundaries(int length) {
+		var process = claimed("a".repeat(length), "b".repeat(length));
+		process.markWaitingForPhone("a".repeat(length), "b".repeat(length), Instant.EPOCH, "actor");
+		assertThat(process.getPatientFirstName()).hasSize(length);
+		assertThat(process.getPatientLastName()).hasSize(length);
+	}
+
+	@ParameterizedTest
+	@MethodSource("invalidConfirmationDetails")
+	void rejectsInvalidConfirmationWithoutPartiallyMutatingTheClaimedProcess(
+			String first, String last, Instant expiry, String actor) {
+		var process = claimed("Ana", "Perez");
+		var auditDate = process.getLastModifiedDate();
+		assertThatThrownBy(() -> process.markWaitingForPhone(first, last, expiry, actor))
+				.isInstanceOf(RuntimeException.class)
+				.hasMessageNotContaining("private-patient-input");
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(process.getPatientFirstName()).isEqualTo("Ana");
+		assertThat(process.getPatientLastName()).isEqualTo("Perez");
+		assertThat(process.getExpiresAt()).isEqualTo(Instant.EPOCH);
+		assertThat(process.getLastModifiedBy()).isEqualTo("claim-actor");
+		assertThat(process.getLastModifiedDate()).isEqualTo(auditDate);
+	}
+
+	static Stream<Arguments> invalidConfirmationDetails() {
+		var invalidNames = Stream.of(null, "", " ", "\t\n", "a", "private-patient-input".repeat(6));
+		return Stream.concat(invalidNames.flatMap(name -> Stream.of(
+				Arguments.of(name, "Perez", Instant.EPOCH, "actor"),
+				Arguments.of("Ana", name, Instant.EPOCH, "actor"))), Stream.of(
+				Arguments.of("Ana", "Perez", null, "actor"),
+				Arguments.of("Ana", "Perez", Instant.EPOCH, null),
+				Arguments.of("Ana", "Perez", Instant.EPOCH, " "),
+				Arguments.of("Ana", "Perez", Instant.EPOCH, "a".repeat(51))));
+	}
+
+	@Test
+	void rejectsConfirmationWithoutAHoldAndRepeatedOrRegressiveTransitions() {
+		assertThatThrownBy(() -> pending().markWaitingForPhone("Ana", "Perez", Instant.EPOCH, "actor"))
+				.isInstanceOf(IllegalStateException.class);
+		var process = claimed("Ana", "Perez");
+		process.markWaitingForPhone("Ana", "Perez", Instant.EPOCH, "actor");
+		assertThatThrownBy(() -> process.markWaitingForPhone("Other", "Patient", Instant.MAX, "other"))
+				.isInstanceOf(IllegalStateException.class);
+		assertThatThrownBy(() -> process.markHeld("other-hold", "other-process", Instant.MAX, "other"))
+				.isInstanceOf(IllegalStateException.class);
+		assertThat(process.getPatientFirstName()).isEqualTo("Ana");
+		assertThat(process.getExpiresAt()).isEqualTo(Instant.EPOCH);
+	}
+
+	@Test
+	void requiresAClaimAndMatchingPatientBeforeRecordingAcceptance() {
+		assertThatThrownBy(() -> held().markWaitingForPhone("Ana", "Perez", Instant.EPOCH, "actor"))
+				.isInstanceOf(IllegalStateException.class);
+		var process = claimed("Ana", "Perez");
+		assertThatThrownBy(() -> process.markWaitingForPhone("Other", "Patient", Instant.EPOCH, "actor"))
+				.isInstanceOf(IllegalStateException.class);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(process.getPatientFirstName()).isEqualTo("Ana");
+	}
+
+	@Test
+	void claimsOnlyHeldProcessesAndReleasesWithoutChangingHoldOrExtendingExpiry() {
+		assertThatThrownBy(() -> pending().claimConfirmation("Ana", "Perez", "actor"))
+				.isInstanceOf(IllegalStateException.class);
+		var process = claimed("Ana", "Perez");
+		assertThatThrownBy(() -> process.claimConfirmation("Other", "Patient", "actor"))
+				.isInstanceOf(IllegalStateException.class);
+		assertThatThrownBy(() -> process.releaseConfirmation(" ")).isInstanceOf(IllegalArgumentException.class);
+		assertThat(process.getPatientFirstName()).isEqualTo("Ana");
+		process.releaseConfirmation("release-actor");
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(process.getPatientFirstName()).isNull();
+		assertThat(process.getPatientLastName()).isNull();
+		assertThat(process.getExpiresAt()).isEqualTo(Instant.EPOCH);
+		assertThat(process.getHoldId()).isEqualTo("hold-first");
+		assertThat(process.getExternalReservationProcessId()).isEqualTo("process-first");
+		assertThat(process.getLastModifiedBy()).isEqualTo("release-actor");
+		assertThatThrownBy(() -> process.releaseConfirmation("actor")).isInstanceOf(IllegalStateException.class);
+	}
+
+	@ParameterizedTest
+	@MethodSource("invalidClaimDetails")
+	void validatesAllClaimInputsBeforeChangingTheHeldProcess(String first, String last, String actor) {
+		var process = held();
+		assertThatThrownBy(() -> process.claimConfirmation(first, last, actor)).isInstanceOf(IllegalArgumentException.class);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(process.getPatientFirstName()).isNull();
+		assertThat(process.getPatientLastName()).isNull();
+		assertThat(process.getLastModifiedBy()).isNull();
+	}
+
+	static Stream<Arguments> invalidClaimDetails() {
+		return invalidConfirmationDetails().filter(args -> args.get()[2] != null)
+				.map(args -> Arguments.of(args.get()[0], args.get()[1], args.get()[3]));
+	}
+
+	private static ReservationProcessEntity claimed(String first, String last) {
+		var process = held();
+		process.claimConfirmation(first, last, "claim-actor");
+		return process;
+	}
+
+	private static ReservationProcessEntity held() {
+		var process = pending();
+		process.markHeld("hold-first", "process-first", Instant.EPOCH, "backend-test");
+		return process;
+	}
+
 	private static ReservationProcessEntity pending() {
 		return new ReservationProcessEntity(owner(), 201, DATE, TIME, "user-42", "backend-test");
 	}
