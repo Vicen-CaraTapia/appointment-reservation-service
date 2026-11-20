@@ -20,6 +20,20 @@ jobs:
   build-and-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: appointment_ci
+          POSTGRES_USER: appointment_ci
+          POSTGRES_PASSWORD: disposable-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U appointment_ci -d appointment_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v7
@@ -34,7 +48,11 @@ jobs:
           cache: maven
 
       - name: Build and test
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+        env:
+          APPOINTMENT_TEST_DB_URL: jdbc:postgresql://localhost:5432/appointment_ci
+          APPOINTMENT_TEST_DB_USERNAME: appointment_ci
+          APPOINTMENT_TEST_DB_PASSWORD: disposable-ci-password
+        run: ./mvnw --batch-mode --no-transfer-progress -Ppostgres-integration clean verify
 
       - name: Validate SonarQube Cloud configuration
         if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)

@@ -41,6 +41,8 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.re
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 import ar.edu.um.prog2.appointmentreservation.support.CatalogIntegrationTestSupport;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationEventStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.PhoneSubmissionStore;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -57,6 +59,11 @@ import static org.mockito.Mockito.when;
 @ActiveProfiles("test")
 @ContextConfiguration(initializers = CatalogIntegrationTestSupport.class)
 class AppointmentReservationApplicationTests {
+	@MockitoBean
+	private PhoneSubmissionStore phoneSubmissionStore;
+
+	@MockitoBean
+	private ReservationEventStore reservationEventStore;
 
 	@MockitoBean
 	private ReservationProcessStore reservationProcessStore;
