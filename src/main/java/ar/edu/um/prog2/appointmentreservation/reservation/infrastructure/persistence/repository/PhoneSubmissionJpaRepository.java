@@ -29,4 +29,16 @@ public interface PhoneSubmissionJpaRepository extends JpaRepository<PhoneSubmiss
 			+ "and s.state = :pending and p.status = :phase and p.expiresAt > :now order by s.createdDate, s.eventId")
 	List<String> findPending(@Param("now") Instant now, @Param("pending") State pending,
 			@Param("phase") ReservationProcessStatus phase, @Param("applied") ReservationEventReceipt.State applied, Pageable page);
+	@Query("select s.eventId from PhoneSubmissionEntity s, ReservationProcessEntity p, ReservationEventInboxEntity r "
+			+ "where s.localProcessId = p.id and p.currentPhoneSubmissionEventId = s.eventId "
+			+ "and s.requestEventId = r.eventId and r.localProcessId = p.id and r.state = :applied and r.contentConflict = false "
+			+ "and s.state = :pending and p.status = :phase and p.expiresAt > :now "
+			+ "and s.publicationAttempts < :maxAttempts "
+			+ "and (s.publicationLeaseUntil is null or s.publicationLeaseUntil <= :now) "
+			+ "and (s.nextPublicationAttemptAt is null or s.nextPublicationAttemptAt <= :now) "
+			+ "order by s.createdDate, s.eventId")
+	List<String> findReady(@Param("now") Instant now, @Param("maxAttempts") int maxAttempts,
+			@Param("pending") State pending, @Param("phase") ReservationProcessStatus phase,
+			@Param("applied") ReservationEventReceipt.State applied, Pageable page);
+
 }

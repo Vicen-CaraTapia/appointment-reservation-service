@@ -31,6 +31,14 @@ catedra:
     appointment-phone-topic: ${CATEDRA_KAFKA_APPOINTMENT_PHONE_TOPIC:}
 
 appointment:
+  phone-publication:
+    enabled: ${APPOINTMENT_PHONE_PUBLICATION_ENABLED:true}
+    max-attempts: ${APPOINTMENT_PHONE_PUBLICATION_MAX_ATTEMPTS:3}
+    lease: ${APPOINTMENT_PHONE_PUBLICATION_LEASE:3m}
+    acknowledgment-timeout: ${APPOINTMENT_PHONE_PUBLICATION_ACK_TIMEOUT:10s}
+    retry-delay: ${APPOINTMENT_PHONE_PUBLICATION_RETRY_DELAY:5s}
+    poll-interval: ${APPOINTMENT_PHONE_PUBLICATION_POLL_INTERVAL:10s}
+    batch-size: ${APPOINTMENT_PHONE_PUBLICATION_BATCH_SIZE:10}
   cors:
     allowed-origins: ${APPOINTMENT_CORS_ALLOWED_ORIGINS:}
   security:

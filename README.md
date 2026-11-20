@@ -107,7 +107,22 @@ el consumidor se detiene; después de corregir la causa, reiniciá el servicio p
 reentregar el mensaje. Para un consumer group sin offsets previos comienza desde
 el primer registro disponible (`earliest`). No crea topics. El adaptador de envío de teléfono usa el topic configurado, espera
 el acknowledgment del broker y conserva los identificadores de la intención durable;
-su coordinación automática y su API pública se incorporan en los siguientes incrementos.
+la intención se guarda antes de publicar, sin esperar al broker dentro de una transacción.
+La API pública de teléfono corresponde a A8.4.
+
+La recuperación de envíos pendientes se ejecuta al arrancar y cada 10 segundos, en lotes
+de hasta 10. Cada intento toma una reserva temporal persistida (3 minutos por defecto).
+Se permiten hasta 3 intentos por envío, conservados tras reinicios, con el mismo `eventId`
+y payload. El acknowledgment se espera hasta 10 segundos; ante un resultado incierto,
+el próximo intento espera al menos 5 segundos. El acknowledgment no confirma la reserva.
+
+Los valores `APPOINTMENT_PHONE_PUBLICATION_*` de `.env.example` permiten ajustar estos
+límites. La reserva debe superar el timeout de acknowledgment más los 60 segundos de
+bloqueo máximo del producer. `APPOINTMENT_PHONE_PUBLICATION_ENABLED=false` desactiva
+el worker. Tras agotar los intentos, el envío permanece durable sin nuevas publicaciones
+automáticas; el contador `publication_attempts` permite diagnosticarlo sin consultar el
+teléfono. No reinicies el contador ni generes otro evento para resolver un resultado
+incierto: la reconciliación general corresponde a M-A10.
 El health check no verifica que el consumidor siga activo.
 
 La prueba aislada `./mvnw -Pembedded-kafka-integration verify` utiliza Kafka embebido

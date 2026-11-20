@@ -12,6 +12,8 @@ public final class CatedraIntegrationTestSupport {
 	}
 
 	public static void configure(ConfigurableApplicationContext context) {
+		context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("phonePublicationTest",
+				Map.of("appointment.phone-publication.enabled", "false")));
 		context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("catedraTest", Map.of(
 				"catedra.group-id", "test-project",
 				"catedra.technical-jwt", "not-a-real-catedra-token",

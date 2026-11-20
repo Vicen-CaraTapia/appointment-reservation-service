@@ -167,7 +167,7 @@ class ReservationEventPersistenceIT {
 	@Test
 	void asynchronousMigrationsPreserveOwnershipSelectionExpiryAndAuditOfTheExistingV4Row() {
 		assertThat(context.getBean(Flyway.class).info().applied()).extracting(m -> m.getVersion().toString())
-				.containsExactly("1", "2", "3", "4", "5", "6", "7");
+				.containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
 		assertThat(context.getBean(Flyway.class).migrate().migrationsExecuted).isZero();
 		var process = process();
 		assertThat(process.getOwner().getId()).isEqualTo(ownerId);
@@ -864,6 +864,96 @@ class ReservationEventPersistenceIT {
 			default -> throw new IllegalArgumentException("Unsupported test fixture");
 		}
 		return input;
+	}
+
+	@Test
+	void publicationLeaseAndAttemptLimitSurviveRestartAndFenceStaleCompletion() {
+		applyRequest(); var original = prepare("leased", "00000001234");
+		var lease = java.time.Duration.ofSeconds(1);
+		var first = phones.claimPublication("leased", TIME, lease, 3).orElseThrow();
+		assertThat(phones.claimPublication("leased", TIME, lease, 3)).isEmpty();
+		assertThat(phones.findReady(TIME, 10, 3)).isEmpty();
+		context.close(); startContext();
+		var second = phones.claimPublication("leased", TIME.plusSeconds(2), lease, 3).orElseThrow();
+		assertThat(second.intent()).isEqualTo(original);
+		assertThat(second.token()).isNotEqualTo(first.token());
+		phones.completePublication("leased", first.token(), TIME.plusSeconds(2));
+		assertThat(phones.findOwned(id, owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.PENDING);
+		phones.deferPublication("leased", second.token(), TIME.plusSeconds(4));
+		assertThat(phones.findReady(TIME.plusSeconds(3), 10, 3)).isEmpty();
+		assertThat(phones.findReady(TIME.plusSeconds(4), 10, 3)).containsExactly("leased");
+		var third = phones.claimPublication("leased", TIME.plusSeconds(4), lease, 3).orElseThrow();
+		phones.deferPublication("leased", third.token(), TIME.plusSeconds(5));
+		context.close(); startContext();
+		assertThat(phones.findReady(TIME.plusSeconds(6), 10, 3)).isEmpty();
+		assertThat(phones.claimPublication("leased", TIME.plusSeconds(6), lease, 3)).isEmpty();
+		assertThat(phones.findOwned(id, owner()).orElseThrow().eventId()).isEqualTo("leased");
+	}
+
+	@Test
+	void concurrentPublicationClaimsHaveOnlyOneWinner() throws Exception {
+		applyRequest(); prepare("concurrent-lease", "00000001234");
+		try (var pool = Executors.newFixedThreadPool(2)) {
+			var start = new CountDownLatch(1);
+			Callable<Boolean> action = () -> {
+				assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+				return phones.claimPublication("concurrent-lease", TIME, java.time.Duration.ofMinutes(3), 3).isPresent();
+			};
+			var first = pool.submit(action); var second = pool.submit(action); start.countDown();
+			assertThat(List.of(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS)))
+					.containsExactlyInAnyOrder(true, false);
+		}
+	}
+
+	@Test
+	void fencedAcknowledgmentWaitsForFinalCatedraResultAndCannotRegressATerminalProcess() {
+		applyRequest(); prepare("ack-lease", "00000001234");
+		var claim = phones.claimPublication("ack-lease", TIME, java.time.Duration.ofMinutes(3), 3).orElseThrow();
+		phones.completePublication("ack-lease", claim.token(), TIME.plusSeconds(1));
+		assertThat(phones.findOwned(id, owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.PUBLISHED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_CONFIRMATION);
+		assertThat(phones.findReady(TIME, 10, 3)).isEmpty();
+		phones.completePublication("ack-lease", claim.token(), TIME.plusSeconds(2));
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_CONFIRMATION);
+	}
+
+	@Test
+	void expiredOrTerminalProcessesCannotBeClaimedForPublication() {
+		applyRequest(); prepare("expired-lease", "00000001234");
+		assertThat(phones.claimPublication("expired-lease", EXPIRY, java.time.Duration.ofMinutes(3), 3)).isEmpty();
+	}
+
+	@Test
+	void recoveryAfterBrokerAcceptanceAndLocalCommitFailureRetainsIdentityAndHasNoOpenNetworkTransaction() throws Exception {
+		applyRequest(); prepare("crash-window", "00000001234");
+		execute("CREATE FUNCTION " + schema + ".reject_recovery_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "IF NEW.publication_state='PUBLISHED' THEN RAISE EXCEPTION 'private diagnostic'; END IF; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER reject_recovery_commit AFTER UPDATE ON " + schema
+				+ ".reservation_phone_submission DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_recovery_commit()");
+		var observed = new java.util.ArrayList<PhoneSubmissionIntent>();
+		ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.PhoneSubmissionPublisher publisher = intent -> {
+			assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			observed.add(intent);
+			return java.util.concurrent.CompletableFuture.completedFuture(null);
+		};
+		var preparation = new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.PreparePhoneSubmissionUseCase(
+				this::owner, phones, "test-project", java.time.Clock.fixed(TIME, java.time.ZoneOffset.UTC));
+		var coordinator = new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.SubmitPhoneInformationUseCase(
+				preparation, phones, publisher, java.time.Clock.fixed(TIME, java.time.ZoneOffset.UTC), 3,
+				java.time.Duration.ofSeconds(70), java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(5));
+		assertThat(coordinator.recover(10).deferred()).isEqualTo(1);
+		assertThat(phones.findOwned(id, owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.PENDING);
+		execute("DROP TRIGGER reject_recovery_commit ON " + schema + ".reservation_phone_submission");
+		context.close(); startContext();
+		var restartedPreparation = new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.PreparePhoneSubmissionUseCase(
+				this::owner, phones, "test-project", java.time.Clock.fixed(TIME.plusSeconds(71), java.time.ZoneOffset.UTC));
+		var restarted = new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.SubmitPhoneInformationUseCase(
+				restartedPreparation, phones, publisher, java.time.Clock.fixed(TIME.plusSeconds(71), java.time.ZoneOffset.UTC), 3,
+				java.time.Duration.ofSeconds(70), java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(5));
+		assertThat(restarted.recover(10).published()).isEqualTo(1);
+		assertThat(observed).hasSize(2);
+		assertThat(observed.get(0)).isEqualTo(observed.get(1));
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_CONFIRMATION);
 	}
 
 	private PhoneSubmissionIntent prepare(String eventId, String phone) {
