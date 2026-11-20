@@ -48,8 +48,9 @@ public class ReservationProcessConfiguration {
 
 	@Bean
 	public ConfirmReservationProcessUseCase confirmReservationProcessUseCase(CurrentReservationUser currentUser,
-			ReservationProcessStore processes, ReservationSlotValidator slots, AppointmentHoldConfirmer confirmer) {
-		return new ConfirmReservationProcessUseCase(currentUser, processes, slots, confirmer, Clock.systemUTC());
+			ReservationProcessStore processes, ReservationSlotValidator slots, AppointmentHoldConfirmer confirmer,
+			ProcessReservationActionUseCase actions) {
+		return new ConfirmReservationProcessUseCase(currentUser, processes, slots, confirmer, Clock.systemUTC(), actions);
 	}
 
 	@Bean

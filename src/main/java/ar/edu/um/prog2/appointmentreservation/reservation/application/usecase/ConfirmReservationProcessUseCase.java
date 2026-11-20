@@ -25,14 +25,17 @@ public final class ConfirmReservationProcessUseCase {
 	private final ReservationSlotValidator slots;
 	private final AppointmentHoldConfirmer confirmer;
 	private final Clock clock;
+	private final ProcessReservationActionUseCase actions;
 
 	public ConfirmReservationProcessUseCase(CurrentReservationUser currentUser, ReservationProcessStore processes,
-			ReservationSlotValidator slots, AppointmentHoldConfirmer confirmer, Clock clock) {
+			ReservationSlotValidator slots, AppointmentHoldConfirmer confirmer, Clock clock,
+			ProcessReservationActionUseCase actions) {
 		this.currentUser = Objects.requireNonNull(currentUser);
 		this.processes = Objects.requireNonNull(processes);
 		this.slots = Objects.requireNonNull(slots);
 		this.confirmer = Objects.requireNonNull(confirmer);
 		this.clock = Objects.requireNonNull(clock);
+		this.actions = Objects.requireNonNull(actions);
 	}
 
 	public StoredReservationProcess confirm(long id, ConfirmationPatient patient) {
@@ -43,7 +46,7 @@ public final class ConfirmReservationProcessUseCase {
 		var owner = currentUser.requireAuthenticated();
 		var observed = loadOwned(id, owner);
 		if (isReplay(observed, patient)) {
-			return observed;
+			return resumePending(observed, owner);
 		}
 		if (observed.status() != ReservationProcessStatus.HELD || observed.hold() == null) {
 			throw stateFailure(ReservationProcessStateException.Reason.CONFLICT);
@@ -64,7 +67,7 @@ public final class ConfirmReservationProcessUseCase {
 			}
 			var latest = loadOwned(id, owner);
 			if (isReplay(latest, patient)) {
-				return latest;
+				return resumePending(latest, owner);
 			}
 			throw failure;
 		}
@@ -99,7 +102,8 @@ public final class ConfirmReservationProcessUseCase {
 			throw new InitialConfirmationException(Reason.INVALID_RESPONSE);
 		}
 		try {
-			return processes.recordInitialConfirmation(claim.id(), claim.version(), owner, accepted);
+			var recorded = processes.recordInitialConfirmation(claim.id(), claim.version(), owner, accepted);
+			return resumePending(recorded, owner);
 		} catch (ReservationProcessStateException failure) {
 			// A failed local commit does not undo remote acceptance. Read once, never resend.
 			return acceptedLocally(claim, owner, patient)
@@ -132,17 +136,42 @@ public final class ConfirmReservationProcessUseCase {
 	private Optional<StoredReservationProcess> acceptedLocally(StoredReservationProcess claim,
 			AuthenticatedReservationUser owner, ConfirmationPatient patient) {
 		try {
-			return processes.findOwned(claim.id(), owner).filter(latest ->
-					latest.status() == ReservationProcessStatus.WAITING_FOR_PHONE
-					&& latest.id() == claim.id() && latest.hold() != null
-					&& latest.hold().holdId().equals(claim.hold().holdId())
-					&& latest.hold().reservationProcessId().equals(claim.hold().reservationProcessId())
-					&& latest.externalPatientId().equals(claim.externalPatientId())
-					&& patient.firstName().equals(latest.patientFirstName())
-					&& patient.lastName().equals(latest.patientLastName()));
+			var accepted = processes.findOwned(claim.id(), owner)
+					.filter(latest -> matchesAcceptedProgress(latest, claim, patient));
+			if (accepted.isEmpty()) {
+				return Optional.empty();
+			}
+			return Optional.of(resumePending(accepted.orElseThrow(), owner));
 		} catch (ReservationProcessStateException failure) {
 			return Optional.empty();
 		}
+	}
+
+	private StoredReservationProcess resumePending(StoredReservationProcess process, AuthenticatedReservationUser owner) {
+		if (process.hold() == null) {
+			return process;
+		}
+		if (actions.resumePending(process.hold().reservationProcessId(), 100).isEmpty()) {
+			return process;
+		}
+		return loadOwned(process.id(), owner);
+	}
+
+	private static boolean matchesAcceptedProgress(StoredReservationProcess latest, StoredReservationProcess claim,
+			ConfirmationPatient patient) {
+		var status = latest.status();
+		boolean accepted = status == ReservationProcessStatus.WAITING_FOR_PHONE
+				|| status == ReservationProcessStatus.PHONE_SUBMISSION_PENDING
+				|| status == ReservationProcessStatus.WAITING_FOR_CONFIRMATION
+				|| status == ReservationProcessStatus.CONFIRMED
+				|| status == ReservationProcessStatus.EXPIRED
+				|| status == ReservationProcessStatus.INVALID;
+		return accepted && latest.id() == claim.id() && latest.hold() != null
+				&& latest.hold().holdId().equals(claim.hold().holdId())
+				&& latest.hold().reservationProcessId().equals(claim.hold().reservationProcessId())
+				&& latest.externalPatientId().equals(claim.externalPatientId())
+				&& patient.firstName().equals(latest.patientFirstName())
+				&& patient.lastName().equals(latest.patientLastName());
 	}
 
 	private static ReservationProcessStateException stateFailure(ReservationProcessStateException.Reason reason) {
