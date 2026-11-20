@@ -444,6 +444,12 @@ Las pruebas reciben datos ficticios de cátedra. Los tests HTTP de cátedra y Ca
 utilizan servidores locales y credenciales ficticias o claves efímeras, sin conexiones
 reales a esos servicios.
 
+El perfil PostgreSQL incluye la confirmación por HTTP con registro/login reales,
+propiedad del proceso, doble clic, rechazos y fallo local después de aceptación
+remota. Usa un servidor de cátedra simulado localmente; no crea reservas reales.
+Los diagnósticos SQL de Hibernate que podrían imprimir filas con datos personales
+están desactivados; los manejadores de la aplicación conservan mensajes controlados.
+
 Para probar el cliente de Appointment contra un Catalog en ejecución, configurá
 las variables `CATALOG_*` e `INTERNAL_CATALOG_JWT_*` de la tabla anterior. Catalog
 debe usar la clave pública correspondiente. Indicá un profesional existente y habilitado, y un
