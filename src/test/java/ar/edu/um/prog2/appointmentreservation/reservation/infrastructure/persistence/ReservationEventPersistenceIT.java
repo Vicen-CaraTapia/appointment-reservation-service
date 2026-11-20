@@ -23,14 +23,25 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import ar.edu.um.prog2.appointmentreservation.AppointmentReservationApplication;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.event.CatedraAppointmentActionDecoder;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.exception.CatedraActionStorageException;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.exception.InvalidCatedraActionException;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.exception.InvalidCatedraActionException.Reason;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.persistence.RejectedCatedraActionStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationEventStorageException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
@@ -46,6 +57,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.NewP
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PhoneSubmissionIntent;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.PhoneSubmissionStateException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ProcessReservationActionUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Signal;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
@@ -57,12 +69,15 @@ import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 @ExtendWith(OutputCaptureExtension.class)
 class ReservationEventPersistenceIT {
 	private static final Instant TIME = Instant.parse("2026-11-20T12:00:00.123456789Z");
 	private static final Instant EXPIRY = TIME.plusSeconds(300);
 	private static final StartReservationCommand SELECTION = new StartReservationCommand(202, LocalDate.of(2030, 1, 3), LocalTime.of(18, 0));
+	private static final String ACTIONS_TOPIC = "test.appointment.actions";
+	private static final String REJECTED_PAYLOAD = "{\"technicalJwt\":\"not-a-real-catedra-token\",\"phone\":\"00000001234\"";
 	private String url;
 	private String username;
 	private String password;
@@ -74,6 +89,8 @@ class ReservationEventPersistenceIT {
 	private ReservationProcessStore store;
 	private ReservationProcessJpaRepository processes;
 	private PhoneSubmissionStore phones;
+	private ProcessReservationActionUseCase actions;
+	private RejectedCatedraActionStore rejectedActions;
 	private boolean prettyHttpJson;
 
 	@BeforeEach
@@ -129,6 +146,8 @@ class ReservationEventPersistenceIT {
 		store = context.getBean(ReservationProcessStore.class);
 		processes = context.getBean(ReservationProcessJpaRepository.class);
 		phones = context.getBean(PhoneSubmissionStore.class);
+		actions = context.getBean(ProcessReservationActionUseCase.class);
+		rejectedActions = context.getBean(RejectedCatedraActionStore.class);
 	}
 
 	@AfterEach
@@ -148,7 +167,7 @@ class ReservationEventPersistenceIT {
 	@Test
 	void asynchronousMigrationsPreserveOwnershipSelectionExpiryAndAuditOfTheExistingV4Row() {
 		assertThat(context.getBean(Flyway.class).info().applied()).extracting(m -> m.getVersion().toString())
-				.containsExactly("1", "2", "3", "4", "5", "6");
+				.containsExactly("1", "2", "3", "4", "5", "6", "7");
 		assertThat(context.getBean(Flyway.class).migrate().migrationsExecuted).isZero();
 		var process = process();
 		assertThat(process.getOwner().getId()).isEqualTo(ownerId);
@@ -636,6 +655,215 @@ class ReservationEventPersistenceIT {
 		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.PHONE_SUBMISSION_PENDING);
 		execute("DROP TRIGGER test_reject_publication ON " + schema + ".reservation_phone_submission");
 		assertThat(phones.recordPublished("phone", TIME.plusSeconds(1)).state()).isEqualTo(PhoneSubmissionIntent.State.PUBLISHED);
+	}
+
+	@ParameterizedTest
+	@CsvSource({"AdditionalInformationRequested,WAITING_FOR_PHONE", "AppointmentConfirmed,CONFIRMED",
+			"AdditionalInformationRejected,WAITING_FOR_PHONE", "AppointmentProcessExpired,EXPIRED", "AppointmentProcessInvalid,INVALID"})
+	void decodedActionsReachTheOwnedProcessThroughTheApplicationUseCase(String type, ReservationProcessStatus expected) {
+		claim();
+		if (!type.equals("AdditionalInformationRequested")) {
+			actions.process(decodeAction("AdditionalInformationRequested"));
+		}
+		if (type.equals("AdditionalInformationRejected")) { prepare("phone", "00000001234"); }
+		var receipt = actions.process(decodeAction(type));
+		assertThat(receipt.state()).isEqualTo(State.APPLIED);
+		assertThat(receipt.localProcessId()).isEqualTo(id);
+		assertThat(process().getStatus()).isEqualTo(expected);
+		assertThat(process().getOwner().getId()).isEqualTo(ownerId);
+		assertThat(process().getRequestEventId()).isEqualTo("request");
+		assertThat(process().getPatientFirstName()).isEqualTo("Ana");
+		assertThat(process().getPatientLastName()).isEqualTo("Perez");
+		assertThat(process().getExpiresAt()).isEqualTo(EXPIRY.truncatedTo(ChronoUnit.MICROS));
+		assertThat(process().getExternalReservationId()).isEqualTo(type.equals("AppointmentConfirmed") ? 8251L : null);
+	}
+
+	@Test
+	void processingNewRequestContinuesAnEarlierResultWithoutWaitingForRedelivery() {
+		claim();
+		var confirmation = decodeAction("AppointmentConfirmed");
+		assertThat(actions.process(confirmation).state()).isEqualTo(State.PENDING);
+		assertThat(actions.process(decodeAction("AdditionalInformationRequested")).state()).isEqualTo(State.APPLIED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+		assertThat(process().getExternalReservationId()).isEqualTo(8251L);
+		assertThat(events.findPending("process", 10)).isEmpty();
+		long version = process().getVersion();
+		assertThat(actions.process(confirmation).state()).isEqualTo(State.APPLIED);
+		assertThat(process().getVersion()).isEqualTo(version);
+	}
+
+	@Test
+	void theApplicationCanResumeDurableEarlyEvidenceAfterRestartAndRestClaim() {
+		assertThat(actions.process(decodeAction("AdditionalInformationRequested")).state()).isEqualTo(State.PENDING);
+		context.close(); startContext();
+		claim();
+		assertThat(actions.resumePending("process", 1)).singleElement().satisfies(receipt ->
+				assertThat(receipt.state()).isEqualTo(State.APPLIED));
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(process().getOwner().getId()).isEqualTo(ownerId);
+	}
+
+	@Test
+	void incompatibleWireRedeliveryCannotReplaceAppliedRequestOrItsDeadline() {
+		claim();
+		actions.process(decodeAction("AdditionalInformationRequested"));
+		var before = process();
+		var wire = wireAction("AdditionalInformationRequested").put("expiresAt", EXPIRY.plusSeconds(60).toString());
+		var result = actions.process(new CatedraAppointmentActionDecoder("test-project").decode("process", wire.toString()));
+		assertThat(result.contentConflict()).isTrue();
+		assertThat(process().getVersion()).isEqualTo(before.getVersion());
+		assertThat(process().getExpiresAt()).isEqualTo(before.getExpiresAt());
+	}
+
+	@Test
+	void failedEffectCommitLeavesReceivedEvidencePendingAndAReplayCanCompleteIt() throws Exception {
+		claim();
+		execute("CREATE FUNCTION " + schema + ".reject_action_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "IF NEW.handling_status='APPLIED' THEN RAISE EXCEPTION USING MESSAGE='test-only-private-commit-diagnostic',"
+				+ "ERRCODE='23514'; END IF; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER test_reject_action_commit AFTER UPDATE ON " + schema
+				+ ".reservation_event_inbox DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_action_commit()");
+		var request = decodeAction("AdditionalInformationRequested");
+		assertThatThrownBy(() -> actions.process(request)).isInstanceOf(ReservationEventStorageException.class).hasNoCause();
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+		assertThat(events.findPending("process", 10)).containsExactly("request");
+		execute("DROP TRIGGER test_reject_action_commit ON " + schema + ".reservation_event_inbox");
+		assertThat(actions.process(request).state()).isEqualTo(State.APPLIED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+	}
+
+	@ParameterizedTest
+	@EnumSource(Reason.class)
+	void technicalRejectionReasonsAreDurableWithoutBecomingAppliedBusinessEvents(Reason reason) throws Exception {
+		rejectedActions.record(ACTIONS_TOPIC, 0, 42, "private-key", REJECTED_PAYLOAD, reason);
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection WHERE rejection_reason='" + reason.name() + "'"))
+				.isEqualTo(1);
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_event_inbox")).isZero();
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(process().getVersion()).isZero();
+		assertThat(rejectionSnapshot()).doesNotContain("private-key", "not-a-real-catedra-token", "00000001234");
+		assertThat(query("SELECT count(*) FROM information_schema.columns WHERE table_schema='" + schema
+				+ "' AND table_name='catedra_action_rejection'")).isEqualTo(6);
+		assertThat(query("SELECT count(*) FROM information_schema.columns WHERE table_schema='" + schema
+				+ "' AND table_name='catedra_action_rejection' AND column_name IN ('topic','partition_id','record_offset',"
+				+ "'message_fingerprint','rejection_reason','received_at')")).isEqualTo(6);
+	}
+
+	@Test
+	void malformedWireInputCanReceiveASanitizedDurableReceiptThatSurvivesRestart() throws Exception {
+		var failure = catchThrowableOfType(InvalidCatedraActionException.class,
+				() -> new CatedraAppointmentActionDecoder("test-project").decode("private-key", REJECTED_PAYLOAD));
+		rejectedActions.record(ACTIONS_TOPIC, 0, 42, "private-key", REJECTED_PAYLOAD, failure.reason());
+		String original = rejectionSnapshot();
+		context.close(); startContext();
+		rejectedActions.record(ACTIONS_TOPIC, 0, 42, "private-key", REJECTED_PAYLOAD, failure.reason());
+		assertThat(rejectionSnapshot()).isEqualTo(original);
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection")).isEqualTo(1);
+	}
+
+	@Test
+	void concurrentIdenticalRejectedDeliveriesCreateOnlyOneReceipt() throws Exception {
+		assertThat(concurrently(() -> {
+			rejectedActions.record(ACTIONS_TOPIC, 0, 42, null, REJECTED_PAYLOAD, Reason.INVALID_PAYLOAD);
+			return true;
+		})).containsOnly(true);
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection")).isEqualTo(1);
+	}
+
+	@Test
+	void rejectionCommitIsIndependentOfAnAmbientTransactionThatLaterRollsBack() throws Exception {
+		new TransactionTemplate(context.getBean(PlatformTransactionManager.class)).executeWithoutResult(transaction -> {
+			rejectedActions.record(ACTIONS_TOPIC, 0, 42, null, null, Reason.INVALID_PAYLOAD);
+			transaction.setRollbackOnly();
+		});
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection")).isEqualTo(1);
+	}
+
+	@Test
+	void failedRejectionCommitRollsBackTheReceiptWithoutLeakingThePayloadAndAllowsRedelivery() throws Exception {
+		execute("CREATE FUNCTION " + schema + ".reject_technical_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "RAISE EXCEPTION USING MESSAGE='test-only-private-commit-diagnostic',ERRCODE='23514'; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER test_reject_technical_receipt AFTER INSERT ON " + schema
+				+ ".catedra_action_rejection DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_technical_receipt()");
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, 42, "private-key", REJECTED_PAYLOAD, Reason.INVALID_PAYLOAD))
+				.isInstanceOf(CatedraActionStorageException.class).hasNoCause()
+				.hasMessage("Catedra action rejection could not be durably recorded");
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection")).isZero();
+		execute("DROP TRIGGER test_reject_technical_receipt ON " + schema + ".catedra_action_rejection");
+		rejectedActions.record(ACTIONS_TOPIC, 0, 42, "private-key", REJECTED_PAYLOAD, Reason.INVALID_PAYLOAD);
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection")).isEqualTo(1);
+	}
+
+	@Test
+	void incompatibleContentOrReasonCannotOverwriteTheOriginalDeliveryReceipt() throws Exception {
+		rejectedActions.record(ACTIONS_TOPIC, 0, 42, "ab", "c", Reason.INVALID_PAYLOAD);
+		String original = rejectionSnapshot();
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, 42, "a", "bc", Reason.INVALID_PAYLOAD))
+				.isInstanceOf(CatedraActionStorageException.class).hasNoCause();
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, 42, "ab", "different", Reason.INVALID_PAYLOAD))
+				.isInstanceOf(CatedraActionStorageException.class).hasNoCause();
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, 42, "ab", "c", Reason.KEY_MISMATCH))
+				.isInstanceOf(CatedraActionStorageException.class).hasNoCause();
+		assertThat(rejectionSnapshot()).isEqualTo(original);
+	}
+
+	@Test
+	void nullAndEmptyBodiesAndKeysHaveDistinctFingerprintsButOtherCoordinatesRemainIndependent() throws Exception {
+		rejectedActions.record(ACTIONS_TOPIC, 0, 42, null, null, Reason.INVALID_PAYLOAD);
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, 42, "", null, Reason.INVALID_PAYLOAD))
+				.isInstanceOf(CatedraActionStorageException.class);
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, 42, null, "", Reason.INVALID_PAYLOAD))
+				.isInstanceOf(CatedraActionStorageException.class);
+		rejectedActions.record(ACTIONS_TOPIC, 1, 42, null, null, Reason.INVALID_PAYLOAD);
+		rejectedActions.record(ACTIONS_TOPIC, 0, 43, null, null, Reason.INVALID_PAYLOAD);
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection")).isEqualTo(3);
+	}
+
+	@Test
+	void rejectsOtherTopicsAndInvalidCoordinatesBeforeWritingTechnicalReceipts() throws Exception {
+		for (String topic : List.of("test.appointment.phone", "test.catalog", "")) {
+			assertThatThrownBy(() -> rejectedActions.record(topic, 0, 42, null, null, Reason.INVALID_PAYLOAD))
+					.isInstanceOf(IllegalArgumentException.class);
+		}
+		assertThatThrownBy(() -> rejectedActions.record(null, 0, 42, null, null, Reason.INVALID_PAYLOAD)).isInstanceOf(IllegalArgumentException.class);
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, -1, 42, null, null, Reason.INVALID_PAYLOAD)).isInstanceOf(IllegalArgumentException.class);
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, -1, null, null, Reason.INVALID_PAYLOAD)).isInstanceOf(IllegalArgumentException.class);
+		assertThatThrownBy(() -> rejectedActions.record(ACTIONS_TOPIC, 0, 42, null, null, null)).isInstanceOf(IllegalArgumentException.class);
+		assertThat(query("SELECT count(*) FROM " + schema + ".catedra_action_rejection")).isZero();
+	}
+
+	private String rejectionSnapshot() throws SQLException {
+		try (var connection = connection(); var statement = connection.createStatement();
+				var result = statement.executeQuery("SELECT row_to_json(r)::text FROM " + schema + ".catedra_action_rejection r")) {
+			assertThat(result.next()).isTrue();
+			return result.getString(1);
+		}
+	}
+
+	private static ReservationActionEvent decodeAction(String type) {
+		return new CatedraAppointmentActionDecoder("test-project").decode("process", wireAction(type).toString());
+	}
+
+	private static ObjectNode wireAction(String type) {
+		var input = new JsonMapper().createObjectNode();
+		input.put("eventId", type.equals("AdditionalInformationRequested") ? "request" : type)
+				.put("eventType", type).put("schemaVersion", 1).put("reservationProcessId", "process")
+				.put("holdId", "hold").put("occurredAt", TIME.toString());
+		if (!type.equals("AdditionalInformationRequested")) {
+			input.put("groupId", "test-project").put("requestEventId", "request");
+		}
+		switch (type) {
+			case "AdditionalInformationRequested" -> input.put("requiredField", "PHONE_NUMBER")
+					.put("message", "Presentation only").put("expiresAt", EXPIRY.toString());
+			case "AppointmentConfirmed" -> input.put("reservationId", 8251).put("professionalId", 202)
+					.put("date", "2030-01-03").put("startTime", "18:00").put("status", "CONFIRMED");
+			case "AdditionalInformationRejected" -> input.put("reason", "INVALID_PHONE_NUMBER")
+					.put("message", "Presentation only").put("expiresAt", EXPIRY.toString());
+			case "AppointmentProcessExpired" -> input.put("reason", "HOLD_EXPIRED");
+			case "AppointmentProcessInvalid" -> input.put("reason", "REQUEST_EVENT_MISMATCH");
+			default -> throw new IllegalArgumentException("Unsupported test fixture");
+		}
+		return input;
 	}
 
 	private PhoneSubmissionIntent prepare(String eventId, String phone) {

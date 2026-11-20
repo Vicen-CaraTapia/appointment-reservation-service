@@ -17,6 +17,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.A
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.CurrentReservationUser;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.StartReservationProcessUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ConfirmReservationProcessUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ProcessReservationActionUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.AppointmentHoldConfirmer;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationEventStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.JpaReservationEventAdapter;
@@ -27,6 +28,11 @@ import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persist
 
 @Configuration(proxyBeanMethods = false)
 public class ReservationProcessConfiguration {
+
+	@Bean
+	public ProcessReservationActionUseCase processReservationActionUseCase(ReservationEventStore events) {
+		return new ProcessReservationActionUseCase(events);
+	}
 
 	@Bean
 	public PhoneSubmissionStore phoneSubmissionStore(ReservationProcessJpaRepository processes,
@@ -42,8 +48,9 @@ public class ReservationProcessConfiguration {
 
 	@Bean
 	public ConfirmReservationProcessUseCase confirmReservationProcessUseCase(CurrentReservationUser currentUser,
-			ReservationProcessStore processes, ReservationSlotValidator slots, AppointmentHoldConfirmer confirmer) {
-		return new ConfirmReservationProcessUseCase(currentUser, processes, slots, confirmer, Clock.systemUTC());
+			ReservationProcessStore processes, ReservationSlotValidator slots, AppointmentHoldConfirmer confirmer,
+			ProcessReservationActionUseCase actions) {
+		return new ConfirmReservationProcessUseCase(currentUser, processes, slots, confirmer, Clock.systemUTC(), actions);
 	}
 
 	@Bean

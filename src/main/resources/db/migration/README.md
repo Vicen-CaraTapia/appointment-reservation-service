@@ -469,3 +469,23 @@ sin regresión del proceso ni retry automático infinito. La continuación autom
 de pendientes, el listener, su validación técnica y su política de offsets son A8.2;
 la publicación es A8.3 y la API para KMP es A8.4. A8.1 entrega únicamente el modelo,
 las garantías transaccionales y los puertos de persistencia que esos pasos necesitan.
+
+### V7 — Recibos técnicos de acciones rechazadas
+
+`catedra_action_rejection` registra entregas que no pueden convertirse en evidencia
+de aplicación: JSON inválido, tipo/versión no soportado o key/grupo incorrectos.
+Su PK es topic/partición/offset; no sustituye la idempotencia funcional por eventId.
+Guarda razón controlada, fecha de recepción y SHA-256 de key y valor con longitudes
+y marcadores de null. No guarda key, payload, JWT, teléfono ni mensajes del parser.
+
+El store acepta únicamente el topic de acciones configurado y coordenadas válidas.
+Una redelivery idéntica conserva el recibo original y su fecha. Contenido o razón
+incompatibles en las mismas coordenadas producen un fallo controlado sin sobrescribir
+la evidencia. El commit usa una transacción local independiente con timeout de 10s;
+si falla, el llamador no obtiene una confirmación durable y no debe avanzar el offset.
+
+Este registro no marca eventos APPLIED, no cambia reservas y no crea una DLT. Permite
+identificar y revisar la entrega; no permite reconstruir el JSON original desde la
+base. Una eventual inspección/relectura del original depende de su retención en Kafka.
+El listener, sus reintentos acotados y la política de pausa/offsets siguen pendientes
+del siguiente incremento de A8.2; V7 por sí sola no activa consumo ni recuperación.

@@ -21,6 +21,7 @@ public final class CatedraIntegrationTestSupport {
 				"catedra.kafka.bootstrap-servers", "kafka.example.test:9092",
 				"catedra.kafka.consumer-group-id", "test-project-consumer",
 				"catedra.kafka.appointment-actions-topic", "test.appointment.actions",
-				"catedra.kafka.appointment-phone-topic", "test.appointment.phone")));
+				"catedra.kafka.appointment-phone-topic", "test.appointment.phone",
+				"spring.kafka.listener.auto-startup", "false")));
 	}
 }

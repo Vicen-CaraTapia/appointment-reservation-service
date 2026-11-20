@@ -101,9 +101,15 @@ autenticado y una agenda vigente válida; tras un hold exitoso guarda el proceso
 en `HELD` asociado a ese usuario. Un fallo de guardado local no cancela el hold
 remoto. La API para KMP es `POST /api/reservation-processes`.
 
-La configuración Kafka prepara las factories y el template, sin registrar listeners,
-consumir, publicar ni crear topics. El arranque y el health check no verifican la
-conectividad con el broker.
+El consumidor Kafka escucha el topic externo de acciones y confirma cada offset
+tras persistir el resultado o el recibo durable del evento. Si falla la persistencia,
+el consumidor se detiene; después de corregir la causa, reiniciá el servicio para
+reentregar el mensaje. Para un consumer group sin offsets previos comienza desde
+el primer registro disponible (`earliest`). No crea topics ni publica teléfonos.
+El health check no verifica que el consumidor siga activo.
+
+La prueba aislada `./mvnw -Pembedded-kafka-integration verify` utiliza Kafka embebido
+para comprobar recepción, offsets y reentrega; no necesita la infraestructura real.
 
 Para clientes web, `APPOINTMENT_CORS_ALLOWED_ORIGINS` admite orígenes exactos separados
 por coma. Vacío no habilita otros orígenes; no se permite `*` ni autenticación por
