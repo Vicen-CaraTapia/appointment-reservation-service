@@ -38,8 +38,9 @@ class ConfirmReservationResponseTest {
 	}
 
 	@ParameterizedTest
-	@EnumSource(value = ReservationProcessStatus.class, names = {"PENDING_HOLD", "HELD"})
-	void cannotPresentHoldCreationStatesAsInitialConfirmation(ReservationProcessStatus status) {
+	@EnumSource(value = ReservationProcessStatus.class, names = {"CONFIRMATION_PENDING", "WAITING_FOR_PHONE"},
+			mode = EnumSource.Mode.EXCLUDE)
+	void cannotExposeUnintegratedWorkflowStatesThroughTheInitialConfirmationContract(ReservationProcessStatus status) {
 		assertThatThrownBy(() -> new ConfirmReservationResponse(123, status, Instant.EPOCH))
 				.isInstanceOf(IllegalArgumentException.class);
 	}
