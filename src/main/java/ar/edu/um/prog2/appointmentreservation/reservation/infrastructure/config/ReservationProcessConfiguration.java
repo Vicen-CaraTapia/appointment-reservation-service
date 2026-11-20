@@ -6,6 +6,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.PreparePhoneSubmissionUseCase;
 import ar.edu.um.prog2.appointmentreservation.availability.application.service.AvailableAppointmentSlotsCalculator;
 import ar.edu.um.prog2.appointmentreservation.professional.application.usecase.LoadEnabledProfessionalUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.service.ReservationSlotValidator;
@@ -28,6 +30,12 @@ import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persist
 
 @Configuration(proxyBeanMethods = false)
 public class ReservationProcessConfiguration {
+
+	@Bean
+	public PreparePhoneSubmissionUseCase preparePhoneSubmissionUseCase(CurrentReservationUser currentUser,
+			PhoneSubmissionStore submissions, CatedraIntegrationProperties properties) {
+		return new PreparePhoneSubmissionUseCase(currentUser, submissions, properties.groupId(), Clock.systemUTC());
+	}
 
 	@Bean
 	public ProcessReservationActionUseCase processReservationActionUseCase(ReservationEventStore events) {

@@ -105,11 +105,14 @@ El consumidor Kafka escucha el topic externo de acciones y confirma cada offset
 tras persistir el resultado o el recibo durable del evento. Si falla la persistencia,
 el consumidor se detiene; después de corregir la causa, reiniciá el servicio para
 reentregar el mensaje. Para un consumer group sin offsets previos comienza desde
-el primer registro disponible (`earliest`). No crea topics ni publica teléfonos.
+el primer registro disponible (`earliest`). No crea topics. El adaptador de envío de teléfono usa el topic configurado, espera
+el acknowledgment del broker y conserva los identificadores de la intención durable;
+su coordinación automática y su API pública se incorporan en los siguientes incrementos.
 El health check no verifica que el consumidor siga activo.
 
 La prueba aislada `./mvnw -Pembedded-kafka-integration verify` utiliza Kafka embebido
-para comprobar recepción, offsets y reentrega; no necesita la infraestructura real.
+para comprobar recepción, offsets, reentrega y publicación del teléfono ficticio;
+no necesita la infraestructura real.
 
 Para clientes web, `APPOINTMENT_CORS_ALLOWED_ORIGINS` admite orígenes exactos separados
 por coma. Vacío no habilita otros orígenes; no se permite `*` ni autenticación por
