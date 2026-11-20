@@ -41,6 +41,10 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Rese
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationEventReceipt.State;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationEventStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.PhoneSubmissionStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.NewPhoneSubmission;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PhoneSubmissionIntent;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.PhoneSubmissionStateException;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Signal;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
@@ -69,6 +73,7 @@ class ReservationEventPersistenceIT {
 	private ReservationEventStore events;
 	private ReservationProcessStore store;
 	private ReservationProcessJpaRepository processes;
+	private PhoneSubmissionStore phones;
 	private boolean prettyHttpJson;
 
 	@BeforeEach
@@ -123,6 +128,7 @@ class ReservationEventPersistenceIT {
 		events = context.getBean(ReservationEventStore.class);
 		store = context.getBean(ReservationProcessStore.class);
 		processes = context.getBean(ReservationProcessJpaRepository.class);
+		phones = context.getBean(PhoneSubmissionStore.class);
 	}
 
 	@AfterEach
@@ -135,14 +141,14 @@ class ReservationEventPersistenceIT {
 				}
 			}
 		}
-		assertThat(output.getAll()).doesNotContain(FinalUserJwtTestSupport.signingSecret(),
+		assertThat(output.getAll()).doesNotContain("00000001234", "00000005678", FinalUserJwtTestSupport.signingSecret(),
 				"test-only-private-commit-diagnostic", "Failing row contains", "not-a-real-catedra-token");
 	}
 
 	@Test
-	void v5PreservesOwnershipSelectionExpiryAndAuditOfTheExistingV4Row() {
+	void asynchronousMigrationsPreserveOwnershipSelectionExpiryAndAuditOfTheExistingV4Row() {
 		assertThat(context.getBean(Flyway.class).info().applied()).extracting(m -> m.getVersion().toString())
-				.containsExactly("1", "2", "3", "4", "5");
+				.containsExactly("1", "2", "3", "4", "5", "6");
 		assertThat(context.getBean(Flyway.class).migrate().migrationsExecuted).isZero();
 		var process = process();
 		assertThat(process.getOwner().getId()).isEqualTo(ownerId);
@@ -373,8 +379,7 @@ class ReservationEventPersistenceIT {
 	@Test
 	void aPhoneRejectionIsCorrectableAndPreservesTheOriginalRequestAndDeadline() throws Exception {
 		applyRequest();
-		// Simulates only the durable phase that A8.3 will own; no message is published here.
-		execute("UPDATE " + schema + ".reservation_process SET process_status='PHONE_SUBMISSION_PENDING',version=version+1 WHERE id=" + id);
+		phones.prepare(owner(), new NewPhoneSubmission(id, "phone", "00000001234", "test-project"), TIME);
 		events.receive(new ReservationActionEvent("rejected", Signal.PHONE_REJECTED, "process", "hold", "request", TIME,
 				EXPIRY, null, null, "INVALID_PHONE_NUMBER"));
 		assertThat(events.applyPending("rejected").state()).isEqualTo(State.APPLIED);
@@ -417,6 +422,233 @@ class ReservationEventPersistenceIT {
 		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
 		assertThatThrownBy(() -> events.findPending("process", 0)).isInstanceOf(IllegalArgumentException.class);
 		assertThatThrownBy(() -> events.findPending("process", 101)).isInstanceOf(IllegalArgumentException.class);
+	}
+
+
+	@Test
+	void phoneIntentAndProcessCommitTogetherAndRetainTheirPayloadAcrossRestart() {
+		applyRequest();
+		var intent = prepare("phone", "00000001234");
+		assertThat(intent.state()).isEqualTo(PhoneSubmissionIntent.State.PENDING);
+		assertThat(intent.requestEventId()).isEqualTo("request");
+		assertThat(intent.holdId()).isEqualTo("hold");
+		assertThat(intent.externalProcessId()).isEqualTo("process");
+		assertThat(intent.technicalGroupId()).isEqualTo("test-project");
+		assertThat(intent.occurredAt()).isEqualTo(TIME.truncatedTo(ChronoUnit.MICROS));
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.PHONE_SUBMISSION_PENDING);
+		assertThat(process().getCurrentPhoneSubmissionEventId()).isEqualTo("phone");
+		context.close(); startContext();
+		assertThat(phones.findOwned(id, owner())).contains(intent);
+		assertThat(phones.findPending(TIME, 10)).containsExactly("phone");
+		assertThat(phones.findPublishable("phone", TIME)).contains(intent);
+		assertThat(prepare("new-candidate", "00000001234")).isEqualTo(intent);
+	}
+
+	@Test
+	void concurrentPreparationOfTheSamePhoneCreatesOnlyOneStableIntent() throws Exception {
+		applyRequest();
+		var candidate = new java.util.concurrent.atomic.AtomicInteger();
+		var intents = concurrently(() -> prepare("candidate-" + candidate.incrementAndGet(), "00000001234"));
+		assertThat(intents.getFirst().eventId()).isEqualTo(intents.getLast().eventId());
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_phone_submission")).isEqualTo(1);
+		assertThat(process().getVersion()).isEqualTo(3);
+	}
+
+	@Test
+	void foreignAbsentUnrequestedAndExpiredProcessesCannotCreateIntentions() throws Exception {
+		assertThatThrownBy(() -> prepare("unrequested", "00000001234"))
+				.isInstanceOfSatisfying(PhoneSubmissionStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(PhoneSubmissionStateException.Reason.CONFLICT));
+		applyRequest();
+		var other = new AuthenticatedReservationUser(Long.MAX_VALUE, "another-user");
+		assertThat(phones.findOwned(id, other)).isEmpty();
+		assertThatThrownBy(() -> phones.prepare(other, new NewPhoneSubmission(id, "foreign", "00000001234", "test-project"), TIME))
+				.isInstanceOfSatisfying(PhoneSubmissionStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(PhoneSubmissionStateException.Reason.NOT_FOUND));
+		assertThatThrownBy(() -> phones.prepare(owner(), new NewPhoneSubmission(Long.MAX_VALUE, "absent", "00000001234", "test-project"), TIME))
+				.isInstanceOfSatisfying(PhoneSubmissionStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(PhoneSubmissionStateException.Reason.NOT_FOUND));
+		assertThatThrownBy(() -> phones.prepare(owner(), new NewPhoneSubmission(id, "expired", "00000001234", "test-project"), EXPIRY))
+				.isInstanceOfSatisfying(PhoneSubmissionStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(PhoneSubmissionStateException.Reason.EXPIRED));
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_phone_submission")).isZero();
+	}
+
+	@Test
+	void replayAfterDeadlineKeepsItsIdentityWithoutMakingItPublishableOrRenewingExpiry() {
+		applyRequest();
+		var original = prepare("phone", "00000001234");
+		var repeat = phones.prepare(owner(), new NewPhoneSubmission(id, "another-id", "00000001234", "test-project"), EXPIRY.plusSeconds(1));
+		assertThat(repeat).isEqualTo(original);
+		assertThat(phones.findPublishable("phone", EXPIRY)).isEmpty();
+		assertThat(phones.findPending(EXPIRY, 10)).isEmpty();
+		assertThat(process().getExpiresAt()).isEqualTo(EXPIRY.truncatedTo(ChronoUnit.MICROS));
+	}
+
+	@Test
+	void anotherPhoneOrTechnicalIdentityCannotReplaceAnInFlightIntent() {
+		applyRequest(); prepare("phone", "00000001234");
+		assertThatThrownBy(() -> prepare("other", "00000005678"))
+				.isInstanceOfSatisfying(PhoneSubmissionStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(PhoneSubmissionStateException.Reason.CONFLICT));
+		assertThatThrownBy(() -> phones.prepare(owner(), new NewPhoneSubmission(id, "other", "00000001234", "another-project"), TIME))
+				.isInstanceOf(PhoneSubmissionStateException.class);
+		assertThat(phones.findOwned(id, owner()).orElseThrow().normalizedPhone()).isEqualTo("00000001234");
+	}
+
+	@Test
+	void brokerAcknowledgmentMeansPublishedAndIsIdempotentButDoesNotMeanConfirmed() {
+		applyRequest(); prepare("phone", "00000001234");
+		var published = phones.recordPublished("phone", TIME.plusSeconds(1));
+		assertThat(published.state()).isEqualTo(PhoneSubmissionIntent.State.PUBLISHED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_CONFIRMATION);
+		assertThat(process().getExternalReservationId()).isNull();
+		assertThat(phones.findPending(TIME, 10)).isEmpty();
+		long version = process().getVersion();
+		assertThat(phones.recordPublished("phone", TIME.plusSeconds(2))).isEqualTo(published);
+		assertThat(process().getVersion()).isEqualTo(version);
+	}
+
+	@Test
+	void rejectionClosesTheOldIntentAndCorrectionGetsANewIdWhileLateAckCannotAdvanceIt() {
+		applyRequest(); prepare("phone", "00000001234");
+		events.receive(rejection()); events.applyPending("rejected");
+		assertThat(phones.findOwned(id, owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.CLOSED);
+		assertThat(prepare("same-phone-candidate", "00000001234").eventId()).isEqualTo("phone");
+		assertThatThrownBy(() -> prepare("phone", "00000005678")).isInstanceOf(PhoneSubmissionStateException.class);
+		var corrected = prepare("correction", "00000005678");
+		assertThat(corrected.requestEventId()).isEqualTo("request");
+		long version = process().getVersion();
+		assertThat(phones.recordPublished("phone", TIME.plusSeconds(1)).state()).isEqualTo(PhoneSubmissionIntent.State.CLOSED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.PHONE_SUBMISSION_PENDING);
+		assertThat(process().getCurrentPhoneSubmissionEventId()).isEqualTo("correction");
+		assertThat(process().getVersion()).isEqualTo(version);
+		assertThat(phones.findPending(TIME, 10)).containsExactly("correction");
+	}
+
+	@Test
+	void concurrentRejectionAndBrokerAckAlwaysLeaveACorrectableClosedIntent() throws Exception {
+		applyRequest(); prepare("phone", "00000001234");
+		events.receive(rejection());
+		var start = new CountDownLatch(1);
+		try (var pool = Executors.newFixedThreadPool(2)) {
+			var published = pool.submit(() -> { assertThat(start.await(5, TimeUnit.SECONDS)).isTrue(); return phones.recordPublished("phone", TIME); });
+			var rejected = pool.submit(() -> { assertThat(start.await(5, TimeUnit.SECONDS)).isTrue(); return events.applyPending("rejected"); });
+			start.countDown(); published.get(15, TimeUnit.SECONDS); rejected.get(15, TimeUnit.SECONDS);
+		}
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(phones.findOwned(id, owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.CLOSED);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"confirmed", "expired", "invalid"})
+	void authoritativeFinalResultsCloseTheIntentAndBlockAnotherSubmission(String kind) {
+		applyRequest(); prepare("phone", "00000001234");
+		var result = switch (kind) {
+			case "confirmed" -> confirmed("final", 8251, "request");
+			case "expired" -> new ReservationActionEvent("final", Signal.PROCESS_EXPIRED, "process", "hold", "request", TIME,
+					null, null, null, "HOLD_EXPIRED");
+			default -> new ReservationActionEvent("final", Signal.PROCESS_INVALID, "process", "hold", "request", TIME,
+					null, null, null, "REQUEST_EVENT_MISMATCH");
+		};
+		events.receive(result); events.applyPending("final");
+		assertThat(phones.findOwned(id, owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.CLOSED);
+		long version = process().getVersion();
+		phones.recordPublished("phone", TIME.plusSeconds(1));
+		assertThat(process().getVersion()).isEqualTo(version);
+		assertThat(process().getStatus().isTerminal()).isTrue();
+		assertThatThrownBy(() -> prepare("new", "00000005678")).isInstanceOf(PhoneSubmissionStateException.class);
+	}
+
+	@Test
+	void disputedRequestIsNotEligibleForPublicationEvenIfAnIntentWasAlreadyPrepared() {
+		applyRequest(); prepare("phone", "00000001234");
+		events.receive(new ReservationActionEvent("request", Signal.PHONE_REQUESTED, "process", "hold", null,
+				TIME, EXPIRY.plusSeconds(1), null, null, null));
+		assertThat(phones.findPending(TIME, 10)).isEmpty();
+		assertThat(phones.findPublishable("phone", TIME)).isEmpty();
+	}
+
+	@Test
+	void failedPreparationCommitRollsBackBothIntentAndProcessWithoutLeakingPhone() throws Exception {
+		applyRequest(); long version = process().getVersion();
+		execute("CREATE FUNCTION " + schema + ".reject_phone_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "RAISE EXCEPTION USING MESSAGE='test-only-private-commit-diagnostic',ERRCODE='23514'; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER test_reject_phone_commit AFTER INSERT ON " + schema
+				+ ".reservation_phone_submission DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_phone_commit()");
+		assertThatThrownBy(() -> prepare("phone", "00000001234"))
+				.isInstanceOfSatisfying(PhoneSubmissionStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(PhoneSubmissionStateException.Reason.STORAGE_FAILURE))
+				.hasNoCause().hasMessageNotContaining("00000001234");
+		assertThat(process().getVersion()).isEqualTo(version);
+		assertThat(process().getCurrentPhoneSubmissionEventId()).isNull();
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_phone_submission")).isZero();
+		execute("DROP TRIGGER test_reject_phone_commit ON " + schema + ".reservation_phone_submission");
+		assertThat(prepare("phone", "00000001234").state()).isEqualTo(PhoneSubmissionIntent.State.PENDING);
+	}
+
+	@Test
+	void failedClosureCommitRollsBackResultInboxAndIntentTogether() throws Exception {
+		applyRequest(); prepare("phone", "00000001234");
+		events.receive(confirmed("final", 8251, "request"));
+		execute("CREATE FUNCTION " + schema + ".reject_phone_closure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "IF NEW.publication_state='CLOSED' THEN RAISE EXCEPTION USING MESSAGE='test-only-private-commit-diagnostic',"
+				+ "ERRCODE='23514'; END IF; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER test_reject_phone_closure AFTER UPDATE ON " + schema
+				+ ".reservation_phone_submission DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_phone_closure()");
+		assertThatThrownBy(() -> events.applyPending("final")).isInstanceOf(ReservationEventStorageException.class).hasNoCause();
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.PHONE_SUBMISSION_PENDING);
+		assertThat(process().getExternalReservationId()).isNull();
+		assertThat(phones.findOwned(id, owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.PENDING);
+		assertThat(events.findPending("process", 10)).containsExactly("final");
+		execute("DROP TRIGGER test_reject_phone_closure ON " + schema + ".reservation_phone_submission");
+		assertThat(events.applyPending("final").state()).isEqualTo(State.APPLIED);
+	}
+
+	@Test
+	void databaseRequiresCurrentPointerToBelongToTheSameProcessAndOnlyOneActiveIntent() throws Exception {
+		applyRequest(); prepare("phone", "00000001234");
+		var other = store.createHeld(owner(), SELECTION,
+				new ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold("other-hold", "other-process", EXPIRY));
+		assertThatThrownBy(() -> execute("UPDATE " + schema + ".reservation_process SET current_phone_submission_event_id='phone' WHERE id=" + other.id()))
+				.isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23503"));
+		assertThatThrownBy(() -> execute("INSERT INTO " + schema + ".reservation_phone_submission"
+				+ " (event_id,local_process_id,request_event_id,external_process_id,hold_id,technical_group_id,normalized_phone,occurred_at)"
+				+ " SELECT 'another-active',local_process_id,request_event_id,external_process_id,hold_id,technical_group_id,normalized_phone,occurred_at"
+				+ " FROM " + schema + ".reservation_phone_submission WHERE event_id='phone'"))
+				.isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23505"));
+	}
+
+	@Test
+	void failedPublicationCommitKeepsTheOriginalIntentPendingForASafeSameIdRetry() throws Exception {
+		applyRequest(); var original = prepare("phone", "00000001234");
+		long version = process().getVersion();
+		execute("CREATE FUNCTION " + schema + ".reject_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "IF NEW.publication_state='PUBLISHED' THEN RAISE EXCEPTION USING MESSAGE='test-only-private-commit-diagnostic',"
+				+ "ERRCODE='23514'; END IF; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER test_reject_publication AFTER UPDATE ON " + schema
+				+ ".reservation_phone_submission DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_publication()");
+		assertThatThrownBy(() -> phones.recordPublished("phone", TIME.plusSeconds(1)))
+				.isInstanceOfSatisfying(PhoneSubmissionStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(PhoneSubmissionStateException.Reason.STORAGE_FAILURE)).hasNoCause();
+		assertThat(phones.findPublishable("phone", TIME)).contains(original);
+		assertThat(process().getVersion()).isEqualTo(version);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.PHONE_SUBMISSION_PENDING);
+		execute("DROP TRIGGER test_reject_publication ON " + schema + ".reservation_phone_submission");
+		assertThat(phones.recordPublished("phone", TIME.plusSeconds(1)).state()).isEqualTo(PhoneSubmissionIntent.State.PUBLISHED);
+	}
+
+	private PhoneSubmissionIntent prepare(String eventId, String phone) {
+		return phones.prepare(owner(), new NewPhoneSubmission(id, eventId, phone, "test-project"), TIME);
+	}
+	private ReservationActionEvent rejection() {
+		return new ReservationActionEvent("rejected", Signal.PHONE_REJECTED, "process", "hold", "request", TIME,
+				EXPIRY, null, null, "INVALID_PHONE_NUMBER");
+	}
+	private int query(String sql) throws SQLException {
+		try (var connection = connection(); var statement = connection.createStatement(); var result = statement.executeQuery(sql)) {
+			result.next(); return result.getInt(1);
+		}
 	}
 
 	private void applyRequest() { claim(); events.receive(request()); assertThat(events.applyPending("request").state()).isEqualTo(State.APPLIED); }

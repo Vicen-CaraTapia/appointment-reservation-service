@@ -41,12 +41,7 @@ public final class AsynchronousReservationTransitions {
 		Objects.requireNonNull(current, "Current process status is required");
 		Objects.requireNonNull(signal, "Process signal is required");
 		if (current.isTerminal()) {
-			// Never replace a final result with another result, an old request or a late broker acknowledgment.
-			if (signal == Signal.PHONE_SUBMISSION_ACCEPTED) {
-				return keep(Outcome.CONFLICT, current);
-			}
-			var terminal = terminalStatus(signal);
-			return keep(terminal != null && terminal != current ? Outcome.CONFLICT : Outcome.IGNORE, current);
+			return forTerminal(current, signal);
 		}
 		if (current == ReservationProcessStatus.CONFIRMATION_PENDING && signal == Signal.PHONE_REQUESTED) {
 			// A trusted, exactly correlated request proves initial acceptance even if REST was lost.
@@ -58,6 +53,16 @@ public final class AsynchronousReservationTransitions {
 			// Incoming evidence may precede the REST commit; preserve it for continuation, not as applied.
 			return keep(isIncoming(signal) ? Outcome.DEFER : Outcome.CONFLICT, current);
 		}
+		return afterInitialAcceptance(current, signal);
+	}
+
+	private static Decision forTerminal(ReservationProcessStatus current, Signal signal) {
+		if (signal == Signal.PHONE_SUBMISSION_ACCEPTED) { return keep(Outcome.CONFLICT, current); }
+		var terminal = terminalStatus(signal);
+		return keep(terminal != null && terminal != current ? Outcome.CONFLICT : Outcome.IGNORE, current);
+	}
+
+	private static Decision afterInitialAcceptance(ReservationProcessStatus current, Signal signal) {
 		return switch (signal) {
 			case PHONE_REQUESTED -> current == ReservationProcessStatus.WAITING_FOR_PHONE
 					? apply(current) : keep(Outcome.CONFLICT, current);

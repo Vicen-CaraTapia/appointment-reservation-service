@@ -63,13 +63,13 @@ class FlywayMigrationIT {
 	void productionStartupAppliesTheUserAndProcessModelsWithoutReapplyingThem() throws SQLException {
 		try (var context = start("classpath:db/migration")) {
 			assertThat(context.getBean(Flyway.class).info().applied())
-					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5");
+					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6");
 			assertThat(query("SELECT count(*) FROM " + schema
 					+ ".flyway_schema_history WHERE version='1' AND success AND type='SQL'"))
 					.isEqualTo(1);
 			assertThat(query("SELECT count(*) FROM information_schema.tables WHERE table_schema='"
 					+ schema + "' AND table_name <> 'flyway_schema_history'"))
-					.isEqualTo(5);
+					.isEqualTo(6);
 			assertThat(query("SELECT count(*) FROM " + schema + ".app_user")).isZero();
 			assertThat(query("SELECT count(*) FROM " + schema
 					+ ".authority WHERE name='ROLE_USER'")).isEqualTo(1);
@@ -137,6 +137,36 @@ class FlywayMigrationIT {
 				+ " OR (version=2 AND process_status='HELD' AND patient_first_name IS NULL)"
 				+ " OR (version=3 AND process_status='WAITING_FOR_PHONE' AND patient_first_name='Ana' AND patient_last_name='Perez'))"))
 				.isEqualTo(3);
+		assertThat(flyway.migrate().migrationsExecuted).isZero();
+	}
+
+	@Test
+	void v6PreservesExistingV5RequestEvidenceWithoutInventingPhoneIntentions() throws SQLException {
+		Flyway.configure().dataSource(url, username, password).schemas(schema).defaultSchema(schema)
+				.createSchemas(false).locations("classpath:db/migration").target("5").load().migrate();
+		long owner = insertUser("upgrade-v6", "upgrade-v6@example.test", "synthetic-test-hash");
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.executeUpdate("INSERT INTO " + schema + ".reservation_process"
+					+ " (owner_user_id,professional_id,appointment_date,start_time,external_patient_id,created_by,process_status,"
+					+ "hold_id,external_reservation_process_id,expires_at,patient_first_name,patient_last_name,request_event_id,version)"
+					+ " VALUES (" + owner + ",202,DATE '2030-01-03',TIME '18:00','user-" + owner
+					+ "','actor','WAITING_FOR_PHONE','hold-v6','process-v6',TIMESTAMPTZ '2026-11-20 12:05:00Z','Ana','Perez','request-v6',7)");
+			statement.executeUpdate("INSERT INTO " + schema + ".reservation_event_inbox"
+					+ " (event_id,external_process_id,payload,fingerprint,handling_status,local_process_id,handled_date)"
+					+ " SELECT 'request-v6','process-v6','{}','" + "a".repeat(64)
+					+ "','APPLIED',id,CURRENT_TIMESTAMP FROM " + schema + ".reservation_process WHERE request_event_id='request-v6'");
+		}
+		var flyway = Flyway.configure().dataSource(url, username, password).schemas(schema).defaultSchema(schema)
+				.createSchemas(false).locations("classpath:db/migration").target("6").load();
+		assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_process WHERE owner_user_id=" + owner
+				+ " AND version=7 AND request_event_id='request-v6' AND process_status='WAITING_FOR_PHONE'"
+				+ " AND current_phone_submission_event_id IS NULL AND patient_first_name='Ana' AND patient_last_name='Perez'"
+				+ " AND expires_at=TIMESTAMPTZ '2026-11-20 12:05:00Z' AND hold_id='hold-v6' AND external_reservation_process_id='process-v6'"))
+				.isEqualTo(1);
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_event_inbox WHERE event_id='request-v6' AND handling_status='APPLIED'"))
+				.isEqualTo(1);
+		assertThat(query("SELECT count(*) FROM " + schema + ".reservation_phone_submission")).isZero();
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 

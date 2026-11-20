@@ -3,6 +3,7 @@ package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persis
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
@@ -21,21 +22,26 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Rese
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationEventStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.ReservationEventInboxJpaRepository;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.ReservationProcessJpaRepository;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.PhoneSubmissionJpaRepository;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Outcome;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Signal;
 
 /** Bounded local operations. Row locks serialize event identity first, then its local process. */
 public final class JpaReservationEventAdapter implements ReservationEventStore {
 	private final ReservationEventInboxJpaRepository inbox;
 	private final ReservationProcessJpaRepository processes;
 	private final TransactionTemplate transactions;
+	private final PhoneSubmissionJpaRepository submissions;
 	// Fixed persistence format: HTTP naming/pretty-printing settings must not change event identity.
 	private final JsonMapper json = JsonMapper.builder().enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
 			.disable(SerializationFeature.INDENT_OUTPUT).build();
 
 	public JpaReservationEventAdapter(ReservationEventInboxJpaRepository inbox, ReservationProcessJpaRepository processes,
-			PlatformTransactionManager transactionManager) {
+			PhoneSubmissionJpaRepository submissions, PlatformTransactionManager transactionManager) {
 		this.inbox = Objects.requireNonNull(inbox);
 		this.processes = Objects.requireNonNull(processes);
 		this.transactions = new TransactionTemplate(Objects.requireNonNull(transactionManager));
+		this.submissions = Objects.requireNonNull(submissions);
 		this.transactions.setTimeout(10);
 	}
 
@@ -72,6 +78,10 @@ public final class JpaReservationEventAdapter implements ReservationEventStore {
 				if (process.isEmpty()) { return stored.receipt(); }
 				var owned = process.orElseThrow();
 				var decision = owned.applyAsynchronousEvidence(event);
+				if (decision.outcome() == Outcome.APPLY && owned.getCurrentPhoneSubmissionEventId() != null
+						&& (owned.getStatus().isTerminal() || event.signal() == Signal.PHONE_REJECTED)) {
+					submissions.findForUpdate(owned.getCurrentPhoneSubmissionEventId()).orElseThrow().close(Instant.now());
+				}
 				switch (decision.outcome()) {
 					case APPLY -> stored.handled(State.APPLIED, owned.getId());
 					case IGNORE -> stored.handled(State.IGNORED, owned.getId());

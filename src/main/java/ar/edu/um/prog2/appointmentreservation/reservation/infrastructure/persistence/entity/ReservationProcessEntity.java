@@ -90,6 +90,9 @@ public class ReservationProcessEntity {
 	@Column(name = "outcome_reason", columnDefinition = "text")
 	private String outcomeReason;
 
+	@Column(name = "current_phone_submission_event_id", columnDefinition = "text")
+	private String currentPhoneSubmissionEventId;
+
 	@Column(name = "created_by", nullable = false, length = 50, updatable = false)
 	private String createdBy;
 
@@ -194,35 +197,44 @@ public class ReservationProcessEntity {
 	/** Storage guards for validated evidence; the adapter commits this effect with its inbox receipt. */
 	public Decision applyAsynchronousEvidence(ReservationActionEvent event) {
 		Objects.requireNonNull(event, "Validated reservation event is required");
-		if (!event.externalProcessId().equals(externalReservationProcessId) || !event.holdId().equals(holdId)) {
-			return unchanged(Outcome.CONFLICT);
-		}
-		if (event.signal() == Signal.PHONE_REQUESTED) {
-			if (!status.isTerminal() && requestEventId != null) {
-				return unchanged(requestEventId.equals(event.eventId())
-						&& expiresAt.equals(event.expiresAt().truncatedTo(ChronoUnit.MICROS)) ? Outcome.IGNORE : Outcome.CONFLICT);
-			}
-		} else {
-			if (requestEventId == null) {
-				return unchanged(status.isTerminal() ? Outcome.CONFLICT : Outcome.DEFER);
-			}
-			if (!requestEventId.equals(event.requestEventId()) || !event.hasSupportedReason()) {
-				return unchanged(Outcome.CONFLICT);
-			}
-		}
-		if (event.signal() == Signal.RESERVATION_CONFIRMED) {
-			var selection = event.confirmedSelection();
-			if (selection.professionalId() != professionalId || !selection.date().equals(appointmentDate)
-					|| !selection.startTime().equals(startTime)
-					|| (externalReservationId != null && !externalReservationId.equals(event.externalReservationId()))) {
-				return unchanged(Outcome.CONFLICT);
-			}
-		}
-		if (status.isTerminal() && event.reason() != null && !event.reason().equals(outcomeReason)) {
-			return unchanged(Outcome.CONFLICT);
-		}
+		var blocked = evidenceOutcome(event);
+		if (blocked != null) { return unchanged(blocked); }
 		var decision = AsynchronousReservationTransitions.decide(status, event.signal());
 		if (decision.outcome() != Outcome.APPLY) { return decision; }
+		applyEvidenceFields(event);
+		status = decision.nextStatus();
+		lastModifiedBy = "catedra-events";
+		lastModifiedDate = Instant.now();
+		return decision;
+	}
+
+
+	private Outcome evidenceOutcome(ReservationActionEvent event) {
+		if (!event.externalProcessId().equals(externalReservationProcessId) || !event.holdId().equals(holdId)) {
+			return Outcome.CONFLICT;
+		}
+		if (event.signal() == Signal.PHONE_REQUESTED) { return phoneRequestOutcome(event); }
+		if (requestEventId == null) { return status.isTerminal() ? Outcome.CONFLICT : Outcome.DEFER; }
+		if (!requestEventId.equals(event.requestEventId()) || !event.hasSupportedReason()) { return Outcome.CONFLICT; }
+		if (event.signal() == Signal.RESERVATION_CONFIRMED && !matchesConfirmation(event)) { return Outcome.CONFLICT; }
+		if (status.isTerminal() && event.reason() != null && !event.reason().equals(outcomeReason)) { return Outcome.CONFLICT; }
+		return null;
+	}
+
+	private Outcome phoneRequestOutcome(ReservationActionEvent event) {
+		if (status.isTerminal() || requestEventId == null) { return null; }
+		return requestEventId.equals(event.eventId()) && expiresAt.equals(event.expiresAt().truncatedTo(ChronoUnit.MICROS))
+				? Outcome.IGNORE : Outcome.CONFLICT;
+	}
+
+	private boolean matchesConfirmation(ReservationActionEvent event) {
+		var selection = event.confirmedSelection();
+		return selection.professionalId() == professionalId && selection.date().equals(appointmentDate)
+				&& selection.startTime().equals(startTime)
+				&& (externalReservationId == null || externalReservationId.equals(event.externalReservationId()));
+	}
+
+	private void applyEvidenceFields(ReservationActionEvent event) {
 		switch (event.signal()) {
 			case PHONE_REQUESTED -> {
 				requestEventId = event.eventId();
@@ -239,13 +251,37 @@ public class ReservationProcessEntity {
 			case PROCESS_EXPIRED, PROCESS_INVALID -> outcomeReason = event.reason();
 			default -> throw new IllegalStateException("Only incoming evidence may update event persistence");
 		}
-		status = decision.nextStatus();
-		lastModifiedBy = "catedra-events";
-		lastModifiedDate = Instant.now();
-		return decision;
 	}
 
 	private Decision unchanged(Outcome outcome) { return new Decision(outcome, status); }
+
+	/** Must be committed atomically with the new intent; this method never publishes. */
+	public void preparePhoneSubmission(String eventId, String actor) {
+		var next = AsynchronousReservationTransitions.decide(status, Signal.PHONE_SUBMISSION_ACCEPTED);
+		if (next.outcome() != Outcome.APPLY || requestEventId == null) {
+			throw new IllegalStateException("A current phone request is required before preparing submission");
+		}
+		String checkedEvent = externalId(eventId);
+		String checkedActor = auditActor(actor);
+		currentPhoneSubmissionEventId = checkedEvent;
+		outcomeReason = null;
+		status = next.nextStatus();
+		lastModifiedBy = checkedActor;
+		lastModifiedDate = Instant.now();
+	}
+
+	/** Broker acknowledgment is evidence of publication only, never of final reservation acceptance. */
+	public void recordPhonePublication(String eventId) {
+		if (!Objects.equals(currentPhoneSubmissionEventId, eventId)) {
+			throw new IllegalStateException("Publication does not match the current submission");
+		}
+		var next = AsynchronousReservationTransitions.decide(status, Signal.PHONE_PUBLICATION_ACKNOWLEDGED);
+		if (next.outcome() == Outcome.APPLY) {
+			status = next.nextStatus();
+			lastModifiedBy = "phone-publisher";
+			lastModifiedDate = Instant.now();
+		}
+	}
 
 	private static String patientName(String value) {
 		if (value == null || value.isBlank() || value.length() < 2 || value.length() > 100) {
@@ -294,6 +330,7 @@ public class ReservationProcessEntity {
 	public String getRequestEventId() { return requestEventId; }
 	public Long getExternalReservationId() { return externalReservationId; }
 	public String getOutcomeReason() { return outcomeReason; }
+	public String getCurrentPhoneSubmissionEventId() { return currentPhoneSubmissionEventId; }
 	public String getCreatedBy() { return createdBy; }
 	public Instant getCreatedDate() { return createdDate; }
 	public String getLastModifiedBy() { return lastModifiedBy; }

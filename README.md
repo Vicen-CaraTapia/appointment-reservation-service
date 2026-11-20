@@ -447,6 +447,8 @@ reales a esos servicios.
 El perfil PostgreSQL incluye la confirmación por HTTP con registro/login reales,
 propiedad del proceso, doble clic, rechazos y fallo local después de aceptación
 remota. Usa un servidor de cátedra simulado localmente; no crea reservas reales.
+También verifica inbox e intenciones durables de teléfono, con duplicados,
+reinicio y rollback. Estas pruebas no consumen ni publican mensajes Kafka reales.
 Los diagnósticos SQL de Hibernate que podrían imprimir filas con datos personales
 están desactivados; los manejadores de la aplicación conservan mensajes controlados.
 

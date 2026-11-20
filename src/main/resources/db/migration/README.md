@@ -210,7 +210,8 @@ una reserva definitivamente confirmada.
 Esta sección concreta la propuesta aprobada para Open-003. Se basa en las
 secciones 15.1 y 15.4–15.9 de la referencia oficial v2 y en DD-008/DD-009.
 El primer incremento preparó la política pura. El segundo incorpora V5 y la
-persistencia de eventos descrita abajo. V1–V4 permanecen intactas. No se activan
+persistencia de eventos; V6 completa la base durable de envío del teléfono.
+V1–V5 permanecen sin reescrituras. No se activan
 consumidores, productores ni nuevas rutas; la API actual no recibe eventos.
 
 ### Estados locales y evidencia
@@ -301,8 +302,9 @@ orden de `occurredAt`.
 - Intención de publicación específica y durable: conservar `eventId`,
   `requestEventId`, correlación, teléfono normalizado y progreso del envío.
   Repetir esa intención conserva su identidad; corregir después de rechazo crea
-  otra identidad de envío sobre la solicitud original. A8.3 implementará la
-  coordinación con el broker, sin transacción distribuida ni exactamente una vez.
+  otra identidad de envío sobre la solicitud original. V6 prepara esa persistencia;
+  A8.3 implementará el caso de uso, normalización y coordinación con el broker,
+  sin transacción distribuida ni exactamente una vez.
 - Una reserva final requiere conservar el `reservationId` externo separado del
   ID local y del `reservationProcessId`. Los rechazos corregibles conservan su
   razón controlada y el vencimiento autoritativo, sin reemplazar al propietario.
@@ -332,8 +334,8 @@ aprobados al CHECK del proceso y agrega:
 
 Las restricciones preservan nombres, IDs externos y plazo en las fases que los
 requieren. El envío pendiente y la espera de resultado exigen solicitud original.
-La intención durable del envío y sus transiciones se implementarán por separado;
-esta migración no demuestra que se haya publicado un teléfono.
+V6 agrega la intención durable y sus transiciones locales; estas migraciones no
+demuestran que se haya publicado un teléfono.
 
 `reservation_event_inbox` usa `event_id` como PK y conserva un snapshot validado
 de aplicación, su huella, el proceso externo y la fecha de recepción. El vínculo
@@ -383,3 +385,87 @@ durablemente sin tocar la versión del proceso. Uno contradictorio no lo reempla
 Ninguna de estas operaciones confirma offsets, consulta Catalog, llama REST ni
 publica mensajes. La continuación tras reinicio se prueba mediante el puerto,
 pero su ejecución automática y la política de mensajes inválidos pertenecen a A8.2.
+
+
+### V6 — Intención durable específica del teléfono
+
+`reservation_phone_submission` prepara la outbox mínima para A8.3. No es un
+framework de mensajes ni un producer. Cada fila conserva eventId de envío,
+proceso local, solicitud original, proceso/hold externos, grupo técnico, teléfono
+ya normalizado, occurredAt y progreso de publicación. El teléfono es un dato
+personal necesario para recuperar el envío; no se almacena ningún JWT o credencial.
+Sus representaciones textuales y los errores están redactados.
+
+El snapshot de envío es inmutable. occurredAt se trunca a microsegundos antes de
+la primera devolución y persistencia, para que un reinicio no cambie el payload
+manteniendo el mismo eventId. Grupo y correlación proceden del backend/proceso;
+no se reciben como identidad confiable desde KMP.
+
+- `PENDING`: intención comprometida, publicación todavía pendiente o incierta.
+- `PUBLISHED`: se registró evidencia del acknowledgment del broker; no implica
+  `CONFIRMED` ni garantiza que la cátedra ya haya procesado el mensaje.
+- `CLOSED`: rechazo corregible o resultado final ya tratado; no volver a publicar
+  esta intención. Se conserva su identidad y snapshot para reconocer repeticiones.
+
+El proceso mantiene `current_phone_submission_event_id`. Una FK compuesta obliga
+al puntero a pertenecer al mismo proceso; la restricción UNIQUE del par existe
+para soportar esa FK, no como otro identificador funcional. Un índice parcial
+permite una sola intención PENDING/PUBLISHED por proceso. Las fases de envío y
+espera de resultado requieren el puntero; las filas previas válidas conservan NULL.
+
+`PhoneSubmissionStore.prepare` bloquea el proceso propio y luego la intención.
+Exige una solicitud aplicada sin conflicto de contenido y un plazo vigente para
+crear un envío nuevo. Guarda fila, puntero, auditoría y PHONE_SUBMISSION_PENDING
+juntos. El ID candidato lo generará A8.3 en backend; una repetición de la misma
+intención devuelve el ID ya persistido aunque el candidato sea distinto.
+
+Mientras haya un envío pendiente/publicado, cambiar el teléfono o el grupo
+produce conflicto. Tras rechazo, repetir el mismo teléfono normalizado devuelve
+la intención cerrada; una corrección distinta dentro del plazo crea otro eventId
+con el requestEventId original. No se habilita una nueva solicitud por corregir
+formato. A8.3/A8.4 deberán reflejar esta distinción en sus casos de uso/respuestas.
+
+La consulta por propietario no revela intenciones ajenas. La búsqueda interna
+para publicación retorna IDs en lotes de 1–100 y solo selecciona la intención
+vigente PENDING, proceso en PHONE_SUBMISSION_PENDING, solicitud aplicada no
+disputada y plazo no vencido. Repetir una observación después del plazo no renueva
+nada ni vuelve publicable el envío. El vencimiento no genera un estado terminal
+local por sí solo; se requiere evidencia autoritativa.
+
+`recordPublished` solo debe invocarse tras el acknowledgment real que implementará
+A8.3. Cambia intención a PUBLISHED y proceso a WAITING_FOR_CONFIRMATION en el mismo
+commit. Lee primero el ID de ruta como proyección escalar y toma después los
+bloqueos proceso/intención, evitando usar un estado mutable cacheado antes de
+esperar el bloqueo. Repetir un acknowledgment no repite auditoría ni versión.
+
+Aplicar un rechazo o resultado final cierra la intención vigente en la misma
+transacción del efecto y del receipt inbox. Un acknowledgment tardío no reabre
+la fila ni sobrescribe una corrección nueva. Se conserva el orden de bloqueos
+inbox → proceso → intención; las operaciones de publicación no toman bloqueos
+inbox después del proceso. Sus comprobaciones de solicitud son lecturas sin
+bloqueo que no pretenden eliminar la ventana distribuida posterior a la lectura.
+
+No hay transacción abierta durante Kafka porque este incremento no lo invoca.
+A8.3 implementará publicación y reintentos acotados de la misma identidad, con
+ventanas explícitas entre envío, acknowledgment y guardado. El lookup de elegibilidad
+no es una promesa de atomicidad con el broker ni un claim de publisher implementado.
+Si llega un resultado durante esa ventana, el guardado local posterior preserva
+el avance autoritativo. No se declara entrega exactamente una vez.
+
+### Entradas que todavía no pertenecen al modelo de aplicación
+
+Un tipo/versión de transporte desconocido o un JSON inválido no se convierten en
+un ReservationActionEvent ni se marcan APPLIED. A8.2 deberá darles tratamiento
+local durable, con identidad de entrega por topic/partición/offset, razón técnica
+y contenido mínimo sanitizado, antes de confirmar el offset. Esa identidad de
+entrega no reemplaza eventId para deduplicar efectos de eventos válidos. Si falla
+esa persistencia, el offset no avanza; la política finita de retry/pausa se definirá
+y probará antes de activar el listener. No se inventa un topic DLT de cátedra ni
+se incluyen cuerpos sensibles en logs como sustituto de persistencia.
+
+Los eventos válidos pero no correlacionados permanecen en la inbox existente.
+Los incompatibles y contradicciones quedan conservados para revisión explícita,
+sin regresión del proceso ni retry automático infinito. La continuación automática
+de pendientes, el listener, su validación técnica y su política de offsets son A8.2;
+la publicación es A8.3 y la API para KMP es A8.4. A8.1 entrega únicamente el modelo,
+las garantías transaccionales y los puertos de persistencia que esos pasos necesitan.

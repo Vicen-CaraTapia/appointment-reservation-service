@@ -21,14 +21,23 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.A
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationEventStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.JpaReservationEventAdapter;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.ReservationEventInboxJpaRepository;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.PhoneSubmissionStore;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.JpaPhoneSubmissionAdapter;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.PhoneSubmissionJpaRepository;
 
 @Configuration(proxyBeanMethods = false)
 public class ReservationProcessConfiguration {
 
 	@Bean
+	public PhoneSubmissionStore phoneSubmissionStore(ReservationProcessJpaRepository processes,
+			PhoneSubmissionJpaRepository submissions, ReservationEventInboxJpaRepository inbox, PlatformTransactionManager transactions) {
+		return new JpaPhoneSubmissionAdapter(processes, submissions, inbox, transactions);
+	}
+
+	@Bean
 	public ReservationEventStore reservationEventStore(ReservationEventInboxJpaRepository inbox,
-			ReservationProcessJpaRepository processes, PlatformTransactionManager transactions) {
-		return new JpaReservationEventAdapter(inbox, processes, transactions);
+			ReservationProcessJpaRepository processes, PhoneSubmissionJpaRepository submissions, PlatformTransactionManager transactions) {
+		return new JpaReservationEventAdapter(inbox, processes, submissions, transactions);
 	}
 
 	@Bean

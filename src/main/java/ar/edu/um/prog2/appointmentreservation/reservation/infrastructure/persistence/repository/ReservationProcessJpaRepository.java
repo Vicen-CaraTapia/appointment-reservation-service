@@ -12,6 +12,14 @@ import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persist
 
 public interface ReservationProcessJpaRepository extends JpaRepository<ReservationProcessEntity, Long> {
 
+	@Lock(LockModeType.PESSIMISTIC_WRITE)
+	@Query("select p from ReservationProcessEntity p where p.id = :id")
+	Optional<ReservationProcessEntity> findByIdForUpdate(@Param("id") long id);
+
+	@Lock(LockModeType.PESSIMISTIC_WRITE)
+	@Query("select p from ReservationProcessEntity p where p.id = :id and p.owner.id = :owner")
+	Optional<ReservationProcessEntity> findOwnedForUpdate(@Param("id") long id, @Param("owner") long ownerId);
+
 	Optional<ReservationProcessEntity> findByIdAndOwner_Id(long id, long ownerId);
 
 	@Lock(LockModeType.PESSIMISTIC_WRITE)
