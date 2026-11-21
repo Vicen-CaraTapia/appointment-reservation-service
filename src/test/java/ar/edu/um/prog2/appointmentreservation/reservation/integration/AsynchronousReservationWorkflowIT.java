@@ -241,6 +241,21 @@ class AsynchronousReservationWorkflowIT {
 		emit(outcome("AppointmentConfirmed", "recovered-final")); awaitStatus("CONFIRMED");
 	}
 
+	@ParameterizedTest
+	@ValueSource(strings = {"AppointmentProcessExpired", "AppointmentProcessInvalid"})
+	void authoritativeTerminalEventsDisablePhoneWithoutExtendingTheDeadlineOrPublishing(String type) throws Exception {
+		assertThat(confirm().statusCode()).isEqualTo(202); emit(request()); awaitAction("SUBMIT_PHONE");
+		String originalExpiry = json.readTree(get(token).body()).get("expiresAt").asText();
+		emit(outcome(type, "terminal-before-phone"));
+		awaitStatus(type.equals("AppointmentProcessExpired") ? "EXPIRED" : "INVALID");
+		var observed = json.readTree(get(token).body());
+		assertThat(observed.get("requiredAction").asText()).isEqualTo("NONE");
+		assertThat(observed.get("expiresAt").asText()).isEqualTo(originalExpiry);
+		assertThat(observed.get("reason").asText()).isEqualTo(type.equals("AppointmentProcessExpired") ? "HOLD_EXPIRED" : "REQUEST_EVENT_MISMATCH");
+		assertThat(post(phonePath(), token, body(PHONE)).statusCode()).isEqualTo(409);
+		assertThat(observer.poll(Duration.ofMillis(300))).isEmpty();
+	}
+
 	private JsonNode request() {
 		return json.createObjectNode().put("schemaVersion", 1).put("eventId", REQUEST).put("eventType", "AdditionalInformationRequested")
 				.put("reservationProcessId", PROCESS).put("holdId", HOLD).put("requiredField", "PHONE_NUMBER").put("message", "Provide phone")
@@ -252,6 +267,7 @@ class AsynchronousReservationWorkflowIT {
 		switch (type) {
 			case "AppointmentConfirmed" -> node.put("status", "CONFIRMED").put("reservationId", 8251).put("professionalId", 202).put("date", DATE.toString()).put("startTime", "18:00:00");
 			case "AdditionalInformationRejected" -> node.put("reason", "INVALID_PHONE_NUMBER").put("message", "Correct phone").put("expiresAt", expires.toString());
+			case "AppointmentProcessInvalid" -> node.put("reason", "REQUEST_EVENT_MISMATCH");
 			default -> node.put("reason", "HOLD_EXPIRED");
 		}
 		return node;

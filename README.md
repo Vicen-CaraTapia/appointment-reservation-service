@@ -570,7 +570,9 @@ de base, JWT de usuarios finales o cátedra. La salida muestra solo IDs, estado 
 cantidad de horarios; nunca el JWT interno ni la clave privada.
 
 Los perfiles de integración seleccionan sus propias pruebas y guardan resúmenes
-Failsafe separados, incluido `asynchronous-workflow-integration`.
+Failsafe separados, incluido `asynchronous-workflow-integration`. CI ejecuta
+PostgreSQL, Kafka embebido y el flujo conjunto en una sola invocación Maven;
+la suite normal se ejecuta una vez y cada perfil conserva su resumen propio.
 
 Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
 `CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,

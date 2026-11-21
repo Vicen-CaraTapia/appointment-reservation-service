@@ -52,7 +52,7 @@ jobs:
           APPOINTMENT_TEST_DB_URL: jdbc:postgresql://localhost:5432/appointment_ci
           APPOINTMENT_TEST_DB_USERNAME: appointment_ci
           APPOINTMENT_TEST_DB_PASSWORD: disposable-ci-password
-        run: ./mvnw --batch-mode --no-transfer-progress -Ppostgres-integration clean verify
+        run: ./mvnw --batch-mode --no-transfer-progress -Ppostgres-integration,embedded-kafka-integration,asynchronous-workflow-integration clean verify
 
       - name: Validate SonarQube Cloud configuration
         if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
