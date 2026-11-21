@@ -184,7 +184,7 @@ class ConfirmReservationRequestJsonTest {
 	}
 
 	@ParameterizedTest
-	@EnumSource(value = ReservationProcessStatus.class, names = {"CONFIRMATION_PENDING", "WAITING_FOR_PHONE"})
+	@EnumSource(value = ReservationProcessStatus.class, names = {"PENDING_HOLD", "HELD"}, mode = EnumSource.Mode.EXCLUDE)
 	void bothSerializersExposeExactlyTheThreeApprovedResponseFields(ReservationProcessStatus status) throws Exception {
 		var expiry = Instant.parse("2026-11-19T22:30:00.123456789Z");
 		var response = new ConfirmReservationResponse(123, status, expiry);

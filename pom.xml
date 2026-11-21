@@ -278,6 +278,36 @@
 				</plugins>
 			</build>
 		</profile>
+		<profile>
+			<id>asynchronous-workflow-integration</id>
+			<build>
+				<plugins>
+					<plugin>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>default</id>
+								<phase>none</phase>
+							</execution>
+							<execution>
+								<id>asynchronous-workflow-it</id>
+								<configuration>
+									<includes>
+										<include>**/AsynchronousReservationWorkflowIT.java</include>
+									</includes>
+									<summaryFile>${project.build.directory}/failsafe-reports/asynchronous-workflow-summary.xml</summaryFile>
+								</configuration>
+								<goals>
+									<goal>integration-test</goal>
+									<goal>verify</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+
 	</profiles>
 
 </project>

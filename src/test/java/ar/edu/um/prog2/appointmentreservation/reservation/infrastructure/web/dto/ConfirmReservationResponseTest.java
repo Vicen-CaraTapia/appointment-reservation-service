@@ -15,8 +15,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ConfirmReservationResponseTest {
 
 	@ParameterizedTest
-	@EnumSource(value = ReservationProcessStatus.class, names = {"CONFIRMATION_PENDING", "WAITING_FOR_PHONE"})
-	void representsBothAllowedObservationsWithoutExtendingAnExpiredDeadline(ReservationProcessStatus status) {
+	@EnumSource(value = ReservationProcessStatus.class, names = {"PENDING_HOLD", "HELD"}, mode = EnumSource.Mode.EXCLUDE)
+	void representsAllPostConfirmationObservationsWithoutExtendingAnExpiredDeadline(ReservationProcessStatus status) {
 		var response = new ConfirmReservationResponse(123, status, Instant.EPOCH);
 		assertThat(response.id()).isEqualTo(123);
 		assertThat(response.status()).isEqualTo(status);
@@ -38,9 +38,8 @@ class ConfirmReservationResponseTest {
 	}
 
 	@ParameterizedTest
-	@EnumSource(value = ReservationProcessStatus.class, names = {"CONFIRMATION_PENDING", "WAITING_FOR_PHONE"},
-			mode = EnumSource.Mode.EXCLUDE)
-	void cannotExposeUnintegratedWorkflowStatesThroughTheInitialConfirmationContract(ReservationProcessStatus status) {
+	@EnumSource(value = ReservationProcessStatus.class, names = {"PENDING_HOLD", "HELD"})
+	void cannotRepresentStatesBeforeInitialConfirmationHasStarted(ReservationProcessStatus status) {
 		assertThatThrownBy(() -> new ConfirmReservationResponse(123, status, Instant.EPOCH))
 				.isInstanceOf(IllegalArgumentException.class);
 	}

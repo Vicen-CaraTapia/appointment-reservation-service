@@ -411,6 +411,12 @@ Respuesta `202 Accepted`, con `Cache-Control: no-store`:
 {"id":123,"status":"WAITING_FOR_PHONE","expiresAt":"2026-11-18T17:40:00Z"}
 ```
 
+Si Kafka adelanta el proceso antes de que termine esta respuesta, `status` refleja
+el progreso persistido: también puede ser `PHONE_SUBMISSION_PENDING`,
+`WAITING_FOR_CONFIRMATION`, `CONFIRMED`, `EXPIRED` o `INVALID`. Esto conserva los
+mismos campos y el vencimiento autoritativo. Un `202` por sí solo no confirma la
+reserva; consultá `GET /api/reservation-processes/{id}` para el progreso posterior.
+
 `WAITING_FOR_PHONE` indica aceptación inicial verificada y persistida; todavía
 falta el flujo asíncrono para confirmar la reserva definitivamente. `expiresAt`
 es el vencimiento observado del proceso, no la fecha del turno. Repetir con el
@@ -532,6 +538,18 @@ transporte Kafka controlado. Estas pruebas no contactan un broker real.
 Los diagnósticos SQL de Hibernate que podrían imprimir filas con datos personales
 están desactivados; los manejadores de la aplicación conservan mensajes controlados.
 
+Para verificar HTTP, persistencia y Kafka juntos, exportá las mismas variables
+`APPOINTMENT_TEST_DB_*` y ejecutá:
+
+```bash
+./mvnw -Pasynchronous-workflow-integration clean verify
+```
+
+Este perfil arranca Kafka embebido, crea topics y esquemas PostgreSQL exclusivos de
+prueba y los limpia al terminar. Usa los adapters reales, con REST de cátedra y
+Catalog simulados. No necesita variables ni infraestructura de cátedra. Las pruebas
+normales y `embedded-kafka-integration` siguen sin requerir PostgreSQL.
+
 Para probar el cliente de Appointment contra un Catalog en ejecución, configurá
 las variables `CATALOG_*` e `INTERNAL_CATALOG_JWT_*` de la tabla anterior. Catalog
 debe usar la clave pública correspondiente. Indicá un profesional existente y habilitado, y un
@@ -551,8 +569,8 @@ No requiere arrancar el servidor completo de Appointment ni cargar sus credencia
 de base, JWT de usuarios finales o cátedra. La salida muestra solo IDs, estado y
 cantidad de horarios; nunca el JWT interno ni la clave privada.
 
-Los perfiles `postgres-integration`, `kafka-integration` y `catalog-integration`
-seleccionan sus propias pruebas y guardan resúmenes Failsafe separados.
+Los perfiles de integración seleccionan sus propias pruebas y guardan resúmenes
+Failsafe separados, incluido `asynchronous-workflow-integration`.
 
 Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
 `CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,
