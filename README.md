@@ -133,6 +133,23 @@ Para clientes web, `APPOINTMENT_CORS_ALLOWED_ORIGINS` admite orígenes exactos s
 por coma. Vacío no habilita otros orígenes; no se permite `*` ni autenticación por
 cookies. Los clientes móviles nativos no necesitan CORS.
 
+### Consultar el progreso de un proceso propio
+
+`GET /api/reservation-processes/{id}` requiere el JWT final-user de su propietario y
+responde `200` con `id`, `status`, `expiresAt`, `requiredAction` y `reason`.
+Los procesos ajenos e inexistentes devuelven el mismo `404`; todas las respuestas
+usan `Cache-Control: no-store`.
+
+`requiredAction` es `SUBMIT_PHONE` cuando hay una solicitud de teléfono aplicada y
+vigente, `CORRECT_PHONE` tras un rechazo `INVALID_PHONE_NUMBER`, o `NONE` mientras
+se espera una solicitud, publicación o resultado, y en estados terminales.
+Al vencer el plazo también es `NONE`; la consulta no modifica el estado durable
+ni inventa un resultado remoto. `reason` contiene únicamente un código controlado
+o `null`. No devuelve teléfonos, nombres ni identificadores técnicos.
+
+KMP puede repetir este GET periódicamente para observar los eventos ya persistidos.
+La consulta no publica mensajes, no aplica eventos pendientes ni consulta Catalog.
+
 ## Ejecutar localmente
 
 Configurá la conexión con la base de Appointment. Para la infraestructura Docker

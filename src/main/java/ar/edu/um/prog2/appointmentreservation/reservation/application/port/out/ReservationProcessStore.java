@@ -2,6 +2,7 @@ package ar.edu.um.prog2.appointmentreservation.reservation.application.port.out;
 
 import java.util.Optional;
 import java.time.Instant;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
 
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
@@ -24,6 +25,9 @@ public interface ReservationProcessStore {
 
 	/** Missing and foreign-owned IDs are indistinguishable; no live persistence entity is returned. */
 	Optional<StoredReservationProcess> findOwned(long id, AuthenticatedReservationUser owner);
+
+	/** One read-only snapshot, filtered by local process ID and trusted owner. */
+	Optional<StoredReservationProgress> findOwnedProgress(long id, AuthenticatedReservationUser owner);
 
 	/** Commits one HELD-to-pending claim before POST; now comes from the application's controlled Clock. */
 	StoredReservationProcess claimInitialConfirmation(long id, long expectedVersion,
