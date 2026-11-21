@@ -956,6 +956,42 @@ class ReservationEventPersistenceIT {
 		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_CONFIRMATION);
 	}
 
+	@Test
+	void ownedProgressIsAReadOnlySnapshotAndRequiresAnAppliedNonConflictingPhoneRequest() {
+		var claimed = claim();
+		store.recordInitialConfirmation(id, claimed.version(), owner(),
+				new ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation(
+						"process", "Ana", "Perez", EXPIRY));
+		var before = store.findOwnedProgress(id, owner()).orElseThrow();
+		assertThat(before.status()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		assertThat(before.phoneRequestReady()).isFalse();
+		events.receive(request()); events.applyPending("request");
+		long version = process().getVersion();
+		var ready = store.findOwnedProgress(id, owner()).orElseThrow();
+		assertThat(ready.phoneRequestReady()).isTrue();
+		assertThat(ready.reason()).isNull();
+		assertThat(process().getVersion()).isEqualTo(version);
+		assertThat(phones.findOwned(id, owner())).isEmpty();
+		assertThat(store.findOwnedProgress(id, new AuthenticatedReservationUser(ownerId + 1000, "other"))).isEmpty();
+		assertThat(store.findOwnedProgress(Long.MAX_VALUE, owner())).isEmpty();
+		var conflicting = new ReservationActionEvent("request", Signal.PHONE_REQUESTED, "process", "hold", null, TIME,
+				EXPIRY.plusSeconds(1), null, null, null);
+		events.receive(conflicting);
+		assertThat(store.findOwnedProgress(id, owner()).orElseThrow().phoneRequestReady()).isFalse();
+	}
+
+	@Test
+	void progressObservesRejectionAndConfirmationWithoutDisclosingPatientOrTechnicalIdentity() {
+		applyRequest(); prepare("progress-phone", "00000001234");
+		events.receive(rejection()); events.applyPending("rejected");
+		var rejected = store.findOwnedProgress(id, owner()).orElseThrow();
+		assertThat(rejected.reason()).isEqualTo("INVALID_PHONE_NUMBER");
+		assertThat(rejected.phoneRequestReady()).isTrue();
+		assertThat(rejected.status()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+		events.receive(confirmed("progress-final", 8251, "request")); events.applyPending("progress-final");
+		assertThat(store.findOwnedProgress(id, owner()).orElseThrow().status()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+	}
+
 	private PhoneSubmissionIntent prepare(String eventId, String phone) {
 		return phones.prepare(owner(), new NewPhoneSubmission(id, eventId, phone, "test-project"), TIME);
 	}

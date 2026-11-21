@@ -133,6 +133,59 @@ Para clientes web, `APPOINTMENT_CORS_ALLOWED_ORIGINS` admite orígenes exactos s
 por coma. Vacío no habilita otros orígenes; no se permite `*` ni autenticación por
 cookies. Los clientes móviles nativos no necesitan CORS.
 
+### Consultar el progreso de un proceso propio
+
+`GET /api/reservation-processes/{id}` requiere el JWT final-user de su propietario y
+responde `200` con `id`, `status`, `expiresAt`, `requiredAction` y `reason`.
+Los procesos ajenos e inexistentes devuelven el mismo `404`; todas las respuestas
+usan `Cache-Control: no-store`.
+
+`requiredAction` es `SUBMIT_PHONE` cuando hay una solicitud de teléfono aplicada y
+vigente, `CORRECT_PHONE` tras un rechazo `INVALID_PHONE_NUMBER`, o `NONE` mientras
+se espera una solicitud, publicación o resultado, y en estados terminales.
+Al vencer el plazo también es `NONE`; la consulta no modifica el estado durable
+ni inventa un resultado remoto. `reason` contiene únicamente un código controlado
+o `null`. No devuelve teléfonos, nombres ni identificadores técnicos.
+
+KMP puede repetir este GET periódicamente para observar los eventos ya persistidos.
+La consulta no publica mensajes, no aplica eventos pendientes ni consulta Catalog.
+
+### Enviar el teléfono solicitado
+
+`POST /api/reservation-processes/{id}/phone` requiere el JWT final-user del
+propietario y `Content-Type: application/json`:
+
+```json
+{"phoneNumber":"+00 (000) 001-234"}
+```
+
+El body acepta únicamente `phoneNumber` como string no vacío. La aplicación elimina
+espacios, guiones, paréntesis y puntos y valida 7–15 dígitos con `+` opcional. No se
+admiten campos de propietario, grupo técnico ni IDs de Kafka.
+
+Una intención aceptada devuelve `202 Accepted` y el mismo formato de progreso del
+GET, leído nuevamente después de la operación. El estado puede seguir pendiente o
+reflejar un evento de confirmación, rechazo o vencimiento recibido entretanto.
+Un `202` por sí solo no confirma una reserva; KMP debe consultar el progreso.
+
+Los errores usan `application/problem+json`, códigos estables y `no-store`:
+
+| HTTP | Código | Significado |
+| --- | --- | --- |
+| 400 | `INVALID_REQUEST` / `VALIDATION_ERROR` | ID, JSON, campos o tipo de dato inválidos. |
+| 400 | `INVALID_PHONE_NUMBER` | El teléfono normalizado no cumple el formato. |
+| 401 | `UNAUTHORIZED` | Falta un JWT final-user válido. |
+| 404 | `RESERVATION_PROCESS_NOT_FOUND` | Proceso inexistente o ajeno. |
+| 409 | `PHONE_SUBMISSION_CONFLICT` | El estado o envío actual no permite esta operación. |
+| 409 | `RESERVATION_PROCESS_EXPIRED` | El plazo no permite un nuevo envío. |
+| 503 | `PHONE_SUBMISSION_OUTCOME_UNKNOWN` | Fallo local; la intención podría estar guardada. |
+| 500 | `RESERVATION_PERSISTENCE_FAILED` | No pudo completarse la operación o la lectura final; consultá el progreso. |
+
+Ante un timeout HTTP o un resultado incierto, consultá primero el GET. Repetir la
+misma intención conserva el envío durable según A8.3; no envíes identificadores
+nuevos para forzar otra publicación. La recuperación respeta los límites configurados.
+
+
 ## Ejecutar localmente
 
 Configurá la conexión con la base de Appointment. Para la infraestructura Docker
@@ -472,7 +525,10 @@ El perfil PostgreSQL incluye la confirmación por HTTP con registro/login reales
 propiedad del proceso, doble clic, rechazos y fallo local después de aceptación
 remota. Usa un servidor de cátedra simulado localmente; no crea reservas reales.
 También verifica inbox e intenciones durables de teléfono, con duplicados,
-reinicio y rollback. Estas pruebas no consumen ni publican mensajes Kafka reales.
+reinicio y rollback. La prueba HTTP de teléfono recorre solicitud, consulta propia,
+envío, corrección y confirmación; también cubre resultados durante la publicación y
+recuperación tras reinicio. Usa el serializador productor y listener reales con
+transporte Kafka controlado. Estas pruebas no contactan un broker real.
 Los diagnósticos SQL de Hibernate que podrían imprimir filas con datos personales
 están desactivados; los manejadores de la aplicación conservan mensajes controlados.
 

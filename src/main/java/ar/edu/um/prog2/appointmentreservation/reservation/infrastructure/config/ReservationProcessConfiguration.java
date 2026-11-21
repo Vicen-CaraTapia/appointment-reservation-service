@@ -1,6 +1,7 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.config;
 
 import java.time.Clock;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.GetReservationProcessProgressUseCase;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -30,6 +31,12 @@ import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persist
 
 @Configuration(proxyBeanMethods = false)
 public class ReservationProcessConfiguration {
+
+	@Bean
+	public GetReservationProcessProgressUseCase getReservationProcessProgressUseCase(CurrentReservationUser currentUser,
+			ReservationProcessStore processes) {
+		return new GetReservationProcessProgressUseCase(currentUser, processes, Clock.systemUTC());
+	}
 
 	@Bean
 	public PreparePhoneSubmissionUseCase preparePhoneSubmissionUseCase(CurrentReservationUser currentUser,
