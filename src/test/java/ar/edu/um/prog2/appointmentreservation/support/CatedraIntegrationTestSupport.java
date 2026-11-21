@@ -12,6 +12,8 @@ public final class CatedraIntegrationTestSupport {
 	}
 
 	public static void configure(ConfigurableApplicationContext context) {
+		context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("phonePublicationTest",
+				Map.of("appointment.phone-publication.enabled", "false")));
 		context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("catedraTest", Map.of(
 				"catedra.group-id", "test-project",
 				"catedra.technical-jwt", "not-a-real-catedra-token",
@@ -21,6 +23,7 @@ public final class CatedraIntegrationTestSupport {
 				"catedra.kafka.bootstrap-servers", "kafka.example.test:9092",
 				"catedra.kafka.consumer-group-id", "test-project-consumer",
 				"catedra.kafka.appointment-actions-topic", "test.appointment.actions",
-				"catedra.kafka.appointment-phone-topic", "test.appointment.phone")));
+				"catedra.kafka.appointment-phone-topic", "test.appointment.phone",
+				"spring.kafka.listener.auto-startup", "false")));
 	}
 }

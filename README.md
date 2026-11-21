@@ -101,13 +101,90 @@ autenticado y una agenda vigente válida; tras un hold exitoso guarda el proceso
 en `HELD` asociado a ese usuario. Un fallo de guardado local no cancela el hold
 remoto. La API para KMP es `POST /api/reservation-processes`.
 
-La configuración Kafka prepara las factories y el template, sin registrar listeners,
-consumir, publicar ni crear topics. El arranque y el health check no verifican la
-conectividad con el broker.
+El consumidor Kafka escucha el topic externo de acciones y confirma cada offset
+tras persistir el resultado o el recibo durable del evento. Si falla la persistencia,
+el consumidor se detiene; después de corregir la causa, reiniciá el servicio para
+reentregar el mensaje. Para un consumer group sin offsets previos comienza desde
+el primer registro disponible (`earliest`). No crea topics. El adaptador de envío de teléfono usa el topic configurado, espera
+el acknowledgment del broker y conserva los identificadores de la intención durable;
+la intención se guarda antes de publicar, sin esperar al broker dentro de una transacción.
+La API pública de teléfono corresponde a A8.4.
+
+La recuperación de envíos pendientes se ejecuta al arrancar y cada 10 segundos, en lotes
+de hasta 10. Cada intento toma una reserva temporal persistida (3 minutos por defecto).
+Se permiten hasta 3 intentos por envío, conservados tras reinicios, con el mismo `eventId`
+y payload. El acknowledgment se espera hasta 10 segundos; ante un resultado incierto,
+el próximo intento espera al menos 5 segundos. El acknowledgment no confirma la reserva.
+
+Los valores `APPOINTMENT_PHONE_PUBLICATION_*` de `.env.example` permiten ajustar estos
+límites. La reserva debe superar el timeout de acknowledgment más los 60 segundos de
+bloqueo máximo del producer. `APPOINTMENT_PHONE_PUBLICATION_ENABLED=false` desactiva
+el worker. Tras agotar los intentos, el envío permanece durable sin nuevas publicaciones
+automáticas; el contador `publication_attempts` permite diagnosticarlo sin consultar el
+teléfono. No reinicies el contador ni generes otro evento para resolver un resultado
+incierto: la reconciliación general corresponde a M-A10.
+El health check no verifica que el consumidor siga activo.
+
+La prueba aislada `./mvnw -Pembedded-kafka-integration verify` utiliza Kafka embebido
+para comprobar recepción, offsets, reentrega y publicación del teléfono ficticio;
+no necesita la infraestructura real.
 
 Para clientes web, `APPOINTMENT_CORS_ALLOWED_ORIGINS` admite orígenes exactos separados
 por coma. Vacío no habilita otros orígenes; no se permite `*` ni autenticación por
 cookies. Los clientes móviles nativos no necesitan CORS.
+
+### Consultar el progreso de un proceso propio
+
+`GET /api/reservation-processes/{id}` requiere el JWT final-user de su propietario y
+responde `200` con `id`, `status`, `expiresAt`, `requiredAction` y `reason`.
+Los procesos ajenos e inexistentes devuelven el mismo `404`; todas las respuestas
+usan `Cache-Control: no-store`.
+
+`requiredAction` es `SUBMIT_PHONE` cuando hay una solicitud de teléfono aplicada y
+vigente, `CORRECT_PHONE` tras un rechazo `INVALID_PHONE_NUMBER`, o `NONE` mientras
+se espera una solicitud, publicación o resultado, y en estados terminales.
+Al vencer el plazo también es `NONE`; la consulta no modifica el estado durable
+ni inventa un resultado remoto. `reason` contiene únicamente un código controlado
+o `null`. No devuelve teléfonos, nombres ni identificadores técnicos.
+
+KMP puede repetir este GET periódicamente para observar los eventos ya persistidos.
+La consulta no publica mensajes, no aplica eventos pendientes ni consulta Catalog.
+
+### Enviar el teléfono solicitado
+
+`POST /api/reservation-processes/{id}/phone` requiere el JWT final-user del
+propietario y `Content-Type: application/json`:
+
+```json
+{"phoneNumber":"+00 (000) 001-234"}
+```
+
+El body acepta únicamente `phoneNumber` como string no vacío. La aplicación elimina
+espacios, guiones, paréntesis y puntos y valida 7–15 dígitos con `+` opcional. No se
+admiten campos de propietario, grupo técnico ni IDs de Kafka.
+
+Una intención aceptada devuelve `202 Accepted` y el mismo formato de progreso del
+GET, leído nuevamente después de la operación. El estado puede seguir pendiente o
+reflejar un evento de confirmación, rechazo o vencimiento recibido entretanto.
+Un `202` por sí solo no confirma una reserva; KMP debe consultar el progreso.
+
+Los errores usan `application/problem+json`, códigos estables y `no-store`:
+
+| HTTP | Código | Significado |
+| --- | --- | --- |
+| 400 | `INVALID_REQUEST` / `VALIDATION_ERROR` | ID, JSON, campos o tipo de dato inválidos. |
+| 400 | `INVALID_PHONE_NUMBER` | El teléfono normalizado no cumple el formato. |
+| 401 | `UNAUTHORIZED` | Falta un JWT final-user válido. |
+| 404 | `RESERVATION_PROCESS_NOT_FOUND` | Proceso inexistente o ajeno. |
+| 409 | `PHONE_SUBMISSION_CONFLICT` | El estado o envío actual no permite esta operación. |
+| 409 | `RESERVATION_PROCESS_EXPIRED` | El plazo no permite un nuevo envío. |
+| 503 | `PHONE_SUBMISSION_OUTCOME_UNKNOWN` | Fallo local; la intención podría estar guardada. |
+| 500 | `RESERVATION_PERSISTENCE_FAILED` | No pudo completarse la operación o la lectura final; consultá el progreso. |
+
+Ante un timeout HTTP o un resultado incierto, consultá primero el GET. Repetir la
+misma intención conserva el envío durable según A8.3; no envíes identificadores
+nuevos para forzar otra publicación. La recuperación respeta los límites configurados.
+
 
 ## Ejecutar localmente
 
@@ -334,6 +411,12 @@ Respuesta `202 Accepted`, con `Cache-Control: no-store`:
 {"id":123,"status":"WAITING_FOR_PHONE","expiresAt":"2026-11-18T17:40:00Z"}
 ```
 
+Si Kafka adelanta el proceso antes de que termine esta respuesta, `status` refleja
+el progreso persistido: también puede ser `PHONE_SUBMISSION_PENDING`,
+`WAITING_FOR_CONFIRMATION`, `CONFIRMED`, `EXPIRED` o `INVALID`. Esto conserva los
+mismos campos y el vencimiento autoritativo. Un `202` por sí solo no confirma la
+reserva; consultá `GET /api/reservation-processes/{id}` para el progreso posterior.
+
 `WAITING_FOR_PHONE` indica aceptación inicial verificada y persistida; todavía
 falta el flujo asíncrono para confirmar la reserva definitivamente. `expiresAt`
 es el vencimiento observado del proceso, no la fecha del turno. Repetir con el
@@ -447,8 +530,25 @@ reales a esos servicios.
 El perfil PostgreSQL incluye la confirmación por HTTP con registro/login reales,
 propiedad del proceso, doble clic, rechazos y fallo local después de aceptación
 remota. Usa un servidor de cátedra simulado localmente; no crea reservas reales.
+También verifica inbox e intenciones durables de teléfono, con duplicados,
+reinicio y rollback. La prueba HTTP de teléfono recorre solicitud, consulta propia,
+envío, corrección y confirmación; también cubre resultados durante la publicación y
+recuperación tras reinicio. Usa el serializador productor y listener reales con
+transporte Kafka controlado. Estas pruebas no contactan un broker real.
 Los diagnósticos SQL de Hibernate que podrían imprimir filas con datos personales
 están desactivados; los manejadores de la aplicación conservan mensajes controlados.
+
+Para verificar HTTP, persistencia y Kafka juntos, exportá las mismas variables
+`APPOINTMENT_TEST_DB_*` y ejecutá:
+
+```bash
+./mvnw -Pasynchronous-workflow-integration clean verify
+```
+
+Este perfil arranca Kafka embebido, crea topics y esquemas PostgreSQL exclusivos de
+prueba y los limpia al terminar. Usa los adapters reales, con REST de cátedra y
+Catalog simulados. No necesita variables ni infraestructura de cátedra. Las pruebas
+normales y `embedded-kafka-integration` siguen sin requerir PostgreSQL.
 
 Para probar el cliente de Appointment contra un Catalog en ejecución, configurá
 las variables `CATALOG_*` e `INTERNAL_CATALOG_JWT_*` de la tabla anterior. Catalog
@@ -469,8 +569,10 @@ No requiere arrancar el servidor completo de Appointment ni cargar sus credencia
 de base, JWT de usuarios finales o cátedra. La salida muestra solo IDs, estado y
 cantidad de horarios; nunca el JWT interno ni la clave privada.
 
-Los perfiles `postgres-integration`, `kafka-integration` y `catalog-integration`
-seleccionan sus propias pruebas y guardan resúmenes Failsafe separados.
+Los perfiles de integración seleccionan sus propias pruebas y guardan resúmenes
+Failsafe separados, incluido `asynchronous-workflow-integration`. CI ejecuta
+PostgreSQL, Kafka embebido y el flujo conjunto en una sola invocación Maven;
+la suite normal se ejecuta una vez y cada perfil conserva su resumen propio.
 
 Para comprobar acceso a metadata de los dos topics reales de cátedra, suministrá
 `CATEDRA_KAFKA_BOOTSTRAP_SERVERS`, `CATEDRA_KAFKA_CONSUMER_GROUP_ID`,

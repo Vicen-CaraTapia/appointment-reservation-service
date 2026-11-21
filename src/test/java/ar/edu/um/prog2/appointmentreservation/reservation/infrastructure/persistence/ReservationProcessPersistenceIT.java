@@ -6,6 +6,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -370,7 +371,7 @@ class ReservationProcessPersistenceIT {
 	@Test
 	void appliesLaterMigrationsAfterAnExistingV1WithoutReapplyingThem() {
 		var flyway = context.getBean(Flyway.class);
-		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4");
+		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 
@@ -496,14 +497,18 @@ class ReservationProcessPersistenceIT {
 	}
 
 	@Test
-	void hasOnlyAnAppointmentOwnedForeignKeyAndProtectsOwnerDeletion() throws SQLException {
+	void hasOnlyAppointmentOwnedForeignKeysAndProtectsOwnerDeletion() throws SQLException {
 		processes.saveAndFlush(pending(owner));
 		try (var connection = connection(); var keys = connection.getMetaData().getImportedKeys(null, schema, "reservation_process")) {
-			assertThat(keys.next()).isTrue();
-			assertThat(keys.getString("PKTABLE_SCHEM")).isEqualTo(schema);
-			assertThat(keys.getString("PKTABLE_NAME")).isEqualTo("app_user");
-			assertThat(keys.getString("FKCOLUMN_NAME")).isEqualTo("owner_user_id");
-			assertThat(keys.next()).isFalse();
+			var references = new ArrayList<String>();
+			while (keys.next()) {
+				assertThat(keys.getString("PKTABLE_SCHEM")).isEqualTo(schema);
+				references.add(keys.getString("FKCOLUMN_NAME") + "->" + keys.getString("PKTABLE_NAME")
+						+ "." + keys.getString("PKCOLUMN_NAME"));
+			}
+			assertThat(references).containsExactlyInAnyOrder("owner_user_id->app_user.id",
+					"current_phone_submission_event_id->reservation_phone_submission.event_id",
+					"id->reservation_phone_submission.local_process_id");
 		}
 		assertSqlRejected("DELETE FROM app_user WHERE id=" + owner.getId(), "23503");
 	}
