@@ -29,3 +29,7 @@ catedra:
     consumer-group-id: test-project-consumer
     appointment-actions-topic: test.appointment.actions
     appointment-phone-topic: test.appointment.phone
+
+appointment:
+  phone-publication:
+    enabled: false

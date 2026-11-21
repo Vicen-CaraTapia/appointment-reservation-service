@@ -2,6 +2,11 @@ package ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructur
 
 import java.util.Map;
 
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.slf4j.LoggerFactory;
+import org.springframework.kafka.support.ProducerListener;
+
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -20,11 +25,19 @@ import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
 import org.springframework.kafka.listener.ContainerProperties.AckMode;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.producer.CatedraPhoneSubmissionPublisher;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.PhoneSubmissionPublisher;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.event.CatedraAppointmentActionDecoder;
 
 @Configuration(proxyBeanMethods = false)
 @EnableKafka
 public class CatedraKafkaConfiguration {
+
+	@Bean
+	public PhoneSubmissionPublisher phoneSubmissionPublisher(KafkaTemplate<String, String> kafka,
+			CatedraIntegrationProperties properties) {
+		return new CatedraPhoneSubmissionPublisher(kafka, properties.kafka().appointmentPhoneTopic(), properties.groupId());
+	}
 
 	@Bean
 	public CatedraAppointmentActionDecoder catedraAppointmentActionDecoder(CatedraIntegrationProperties properties) {
@@ -75,6 +88,14 @@ public class CatedraKafkaConfiguration {
 
 	@Bean
 	public KafkaTemplate<String, String> catedraKafkaTemplate(ProducerFactory<String, String> producerFactory) {
-		return new KafkaTemplate<>(producerFactory);
+		var template = new KafkaTemplate<String, String>(producerFactory);
+		// The default error listener can log the record value, which contains personal data.
+		template.setProducerListener(new ProducerListener<>() {
+			@Override
+			public void onError(ProducerRecord<String, String> record, RecordMetadata metadata, Exception failure) {
+				LoggerFactory.getLogger(CatedraKafkaConfiguration.class).warn("Catedra Kafka publication failed");
+			}
+		});
+		return template;
 	}
 }

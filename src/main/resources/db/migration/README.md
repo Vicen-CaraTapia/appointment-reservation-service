@@ -489,3 +489,11 @@ identificar y revisar la entrega; no permite reconstruir el JSON original desde 
 base. Una eventual inspección/relectura del original depende de su retención en Kafka.
 El listener, sus reintentos acotados y la política de pausa/offsets siguen pendientes
 del siguiente incremento de A8.2; V7 por sí sola no activa consumo ni recuperación.
+
+## V8 — Phone publication recovery
+
+Adds a durable publication-attempt counter, next-attempt timestamp and a tokenized
+lease to the existing phone intent. Claims commit before waiting for Kafka. An expired
+lease permits recovery with the same event ID and payload; completion is fenced by
+the claim token. Exhaustion preserves the pending intent and does not imply remote
+failure. Existing publication and reservation states are unchanged.

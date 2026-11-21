@@ -233,6 +233,7 @@
 								<configuration>
 									<includes>
 										<include>**/CatedraAppointmentActionListenerKafkaIT.java</include>
+									<include>**/CatedraPhoneSubmissionPublisherKafkaIT.java</include>
 									</includes>
 									<summaryFile>${project.build.directory}/failsafe-reports/embedded-kafka-summary.xml</summaryFile>
 								</configuration>

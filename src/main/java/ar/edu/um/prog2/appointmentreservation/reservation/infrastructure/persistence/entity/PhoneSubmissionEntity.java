@@ -1,6 +1,7 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity;
 
 import java.time.Instant;
+import java.util.UUID;
 import java.time.temporal.ChronoUnit;
 
 import jakarta.persistence.Column;
@@ -44,6 +45,33 @@ public class PhoneSubmissionEntity {
 	private Instant publishedDate;
 	@Column(name = "closed_date")
 	private Instant closedDate;
+
+	@Column(name = "publication_attempts", nullable = false)
+	private int publicationAttempts;
+	@Column(name = "publication_lease_token")
+	private UUID publicationLeaseToken;
+	@Column(name = "publication_lease_until")
+	private Instant publicationLeaseUntil;
+	@Column(name = "next_publication_attempt_at")
+	private Instant nextPublicationAttemptAt;
+
+	public boolean ready(Instant now, int maxAttempts) {
+		return state == State.PENDING && publicationAttempts < maxAttempts
+				&& (publicationLeaseUntil == null || !publicationLeaseUntil.isAfter(now))
+				&& (nextPublicationAttemptAt == null || !nextPublicationAttemptAt.isAfter(now));
+	}
+	public UUID claim(Instant until) {
+		publicationAttempts++;
+		publicationLeaseToken = UUID.randomUUID();
+		publicationLeaseUntil = until.truncatedTo(ChronoUnit.MICROS);
+		return publicationLeaseToken;
+	}
+	public boolean ownsClaim(UUID token) { return token != null && token.equals(publicationLeaseToken); }
+	public void release(Instant nextAttemptAt) {
+		publicationLeaseToken = null;
+		publicationLeaseUntil = null;
+		nextPublicationAttemptAt = nextAttemptAt == null ? null : nextAttemptAt.truncatedTo(ChronoUnit.MICROS);
+	}
 
 	protected PhoneSubmissionEntity() { }
 
