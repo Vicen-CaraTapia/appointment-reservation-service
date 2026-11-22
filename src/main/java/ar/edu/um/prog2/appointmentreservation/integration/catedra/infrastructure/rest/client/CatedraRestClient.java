@@ -71,6 +71,11 @@ public final class CatedraRestClient {
 		return exchange(HttpMethod.POST, encodedRelativePath, body, responseType, HttpStatus.ACCEPTED, true);
 	}
 
+	/** Strict cancellation success; absence of a body is intentional and the relative target is encoded once. */
+	public <T> @Nullable T postOk(String encodedRelativePath, @Nullable Object body, Class<T> responseType) {
+		return exchange(HttpMethod.POST, encodedRelativePath, body, responseType, HttpStatus.OK, true);
+	}
+
 	private <T> @Nullable T exchange(HttpMethod method, String path, @Nullable Object body, Class<T> responseType,
 			@Nullable HttpStatusCode expectedStatus) {
 		return exchange(method, path, body, responseType, expectedStatus, false);

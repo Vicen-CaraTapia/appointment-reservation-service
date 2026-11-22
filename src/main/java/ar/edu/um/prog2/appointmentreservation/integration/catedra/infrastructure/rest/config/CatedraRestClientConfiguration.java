@@ -25,8 +25,23 @@ import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.adapter.CatedraTechnicalReservationAdapter;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.TechnicalReservationSource;
 
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraReservationCancellationClient;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.adapter.CatedraReservationCancellationAdapter;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationCanceller;
+
 @Configuration(proxyBeanMethods = false)
 public class CatedraRestClientConfiguration {
+
+	@Bean
+	public CatedraReservationCancellationClient catedraReservationCancellationClient(CatedraRestClient rest) {
+		return new CatedraReservationCancellationClient(rest);
+	}
+
+	@Bean
+	public ReservationCanceller reservationCanceller(CatedraReservationCancellationClient client) {
+		return new CatedraReservationCancellationAdapter(client);
+	}
+
 
 	@Bean
 	public CatedraReservationListingClient catedraReservationListingClient(CatedraRestClient rest) {
