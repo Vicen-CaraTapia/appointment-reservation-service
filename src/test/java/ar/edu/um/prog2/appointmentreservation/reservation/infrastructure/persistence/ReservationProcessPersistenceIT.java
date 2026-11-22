@@ -1,5 +1,13 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationPage;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.HeldReservationProcess;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.TechnicalReservationSource;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ListOwnedReservationsUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationQuery;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservationPage;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -371,7 +379,7 @@ class ReservationProcessPersistenceIT {
 	@Test
 	void appliesLaterMigrationsAfterAnExistingV1WithoutReapplyingThem() {
 		var flyway = context.getBean(Flyway.class);
-		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
+		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9");
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 
@@ -1044,6 +1052,284 @@ class ReservationProcessPersistenceIT {
 			connection.setSchema(schema);
 		}
 		return connection;
+	}
+
+	@Test
+	void associationProjectionFindsEitherExternalIdentifierIncludingForeignOwnershipWithoutMutatingState() throws SQLException {
+		var held = store().createHeld(identity(owner),selection(),new AppointmentHold("hold-query-owned","process-query-owned",EXPIRY));
+		var other = users.saveAndFlush(new UserEntity("querybob",owner.getPasswordHash(),null,null,"querybob@example.test",null,"es","test"));
+		var foreign = store().createHeld(identity(other),selection(),new AppointmentHold("hold-query-foreign","process-query-foreign",EXPIRY));
+		// Fixture of a previously confirmed reservation, independent from the Kafka processing under test elsewhere.
+		try (var connection = connection(); var statement = connection.prepareStatement(
+				"UPDATE reservation_process SET process_status='CONFIRMED', external_reservation_id=8251, "
+				+ "request_event_id='query-request', patient_first_name='Test', patient_last_name='Patient' WHERE id=?")) {
+			statement.setLong(1,foreign.id()); statement.executeUpdate();
+		}
+		var before = store().findOwned(held.id(),identity(owner)).orElseThrow();
+		var result = store().findReservationAssociations(java.util.Set.of("process-query-owned"),java.util.Set.of(8251L));
+		assertThat(result).hasSize(2);
+		assertThat(result).anySatisfy(row -> {
+			assertThat(row.localProcessId()).isEqualTo(held.id()); assertThat(row.ownerUserId()).isEqualTo(owner.getId());
+			assertThat(row.externalProcessId()).isEqualTo("process-query-owned"); assertThat(row.externalReservationId()).isNull();
+			assertThat(row.appointmentDate()).isEqualTo(DATE); assertThat(row.startTime()).isEqualTo(TIME);
+			assertThat(row.professionalId()).isEqualTo(Long.MAX_VALUE);
+		});
+		assertThat(result).anySatisfy(row -> {
+			assertThat(row.localProcessId()).isEqualTo(foreign.id()); assertThat(row.ownerUserId()).isEqualTo(other.getId());
+			assertThat(row.externalReservationId()).isEqualTo(8251L);
+		});
+		assertThat(store().findOwned(held.id(),identity(owner))).contains(before);
+		assertThat(store().findReservationAssociations(java.util.Set.of("missing"),java.util.Set.of())).isEmpty();
+		assertThat(store().findReservationAssociations(java.util.Set.of(),java.util.Set.of(8251L))).hasSize(1);
+	}
+
+	@Test
+	void ownedListingVerifiesRealAssociationsWithoutAnOpenDatabaseTransactionDuringRemoteReads() {
+		var held = store().createHeld(identity(owner),selection(),new AppointmentHold("hold-query-workflow","process-query-workflow",EXPIRY));
+		var before = store().findOwned(held.id(),identity(owner)).orElseThrow();
+		TechnicalReservationSource remote = query -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			assertThat(query.externalPatientId()).isEqualTo("user-"+owner.getId());
+			var row = new TechnicalReservation(
+					9001,"process-query-workflow",query.externalPatientId(),DATE,TIME,TIME.plusMinutes(30),Long.MAX_VALUE,
+					null,null,null,null,null,TechnicalReservation.Status.PHONE_PENDING,
+					Instant.parse("2026-11-22T12:00:00Z"),null,null,null);
+			return new TechnicalReservationPage(List.of(row),1);
+		};
+		var useCase = new ListOwnedReservationsUseCase(
+				() -> identity(owner),remote,store(),java.time.Clock.systemUTC());
+		var result = useCase.list(new OwnedReservationQuery(null,null,null,0,20));
+		assertThat(result.total()).isEqualTo(1); assertThat(result.items().getFirst().localProcessId()).isEqualTo(held.id());
+		var after=processes.findById(held.id()).orElseThrow();
+		assertThat(after.getStatus()).isEqualTo(before.status());
+		assertThat(after.getVersion()).isEqualTo(before.version()+1);
+		assertThat(after.getExternalReservationId()).isEqualTo(9001L);
+		assertThat(result.items().getFirst().localStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(result.items().getFirst().verifiedAt()).isEqualTo(after.getRestVerifiedAt());
+		assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings={"PHONE_PENDING","CONFIRMED","CANCELLED","FAILED"})
+	void reconcilesVerifiedRestEvidenceWithoutInventingKafkaEventsOrPatientNames(String remoteStatus) {
+		var held = restHeld("verified");
+		Instant started = Instant.now();
+		var result = store().reconcileReservations(identity(owner),List.of(restItem(held.id(),"verified",8251,remoteStatus)),started);
+		var stored = processes.findById(held.id()).orElseThrow();
+		assertThat(stored.getStatus().name()).isEqualTo(remoteStatus.equals("PHONE_PENDING")?"HELD":remoteStatus);
+		assertThat(stored.getRestObservedStatus().name()).isEqualTo(remoteStatus);
+		assertThat(stored.getRestVerifiedAt()).isNotNull(); assertThat(stored.getRestVerifiedAt()).isAfterOrEqualTo(started.truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+		assertThat(stored.getExternalReservationId()).isEqualTo(8251L);
+		assertThat(stored.getRequestEventId()).isNull(); assertThat(stored.getPatientFirstName()).isNull();
+		assertThat(stored.getOutcomeReason()).isNull(); assertThat(stored.getVersion()).isEqualTo(1);
+		assertThat(stored.getLastModifiedBy()).isEqualTo(owner.getLogin());
+		assertThat(result.getFirst().status()).isEqualTo(stored.getStatus());
+		assertThat(queryRestInboxCount()).isZero();
+	}
+
+	@Test
+	void restCancellationCanAdvanceConfirmedButOldConfirmationCannotReopenIt() {
+		var held = restHeld("cancel");
+		store().reconcileReservations(identity(owner),List.of(restItem(held.id(),"cancel",8251,"CONFIRMED")),Instant.now());
+		store().reconcileReservations(identity(owner),List.of(restItem(held.id(),"cancel",8251,"CANCELLED")),Instant.now());
+		var before = processes.findById(held.id()).orElseThrow();
+		assertThatThrownBy(() -> store().reconcileReservations(identity(owner),
+				List.of(restItem(held.id(),"cancel",8251,"CONFIRMED")),Instant.now()))
+				.isInstanceOfSatisfying(OwnedReservationQueryException.class,
+						error -> assertThat(error.reason().name()).isEqualTo("CONFLICTING_STATE"));
+		var after = processes.findById(held.id()).orElseThrow();
+		assertThat(after.getStatus().name()).isEqualTo("CANCELLED");
+		assertThat(after.getVersion()).isEqualTo(before.getVersion());
+		assertThat(after.getRestVerifiedAt()).isEqualTo(before.getRestVerifiedAt());
+	}
+
+	@Test
+	void conflictingRestBatchRollsBackEarlierStateAssociationAndAuditChanges() {
+		var first = restHeld("batch-first"); var second = restHeld("batch-second");
+		var before = processes.findById(first.id()).orElseThrow();
+		assertThatThrownBy(() -> store().reconcileReservations(identity(owner),List.of(
+				restItem(first.id(),"batch-first",8251,"CONFIRMED"),restItem(second.id(),"different-process",8252,"CONFIRMED")),Instant.now()))
+				.isInstanceOf(OwnedReservationQueryException.class);
+		var after = processes.findById(first.id()).orElseThrow();
+		assertThat(after.getStatus()).isEqualTo(before.getStatus()); assertThat(after.getVersion()).isEqualTo(before.getVersion());
+		assertThat(after.getExternalReservationId()).isNull(); assertThat(after.getRestVerifiedAt()).isNull();
+		assertThat(after.getLastModifiedDate()).isEqualTo(before.getLastModifiedDate());
+	}
+
+	@Test
+	void restVerificationRejectsAWriteCommittedWhileTheRemoteRequestWasInFlight() throws SQLException {
+		var held = restHeld("race"); Instant started = Instant.now().minusSeconds(1);
+		// Model an event/worker write after the GET started. The locked latest row is authoritative locally.
+		try(var connection=connection();var statement=connection.prepareStatement(
+				"UPDATE reservation_process SET version=version+1,last_modified_by='catedra-events',last_modified_date=CURRENT_TIMESTAMP WHERE id=?")) {
+			statement.setLong(1,held.id());statement.executeUpdate();
+		}
+		assertThatThrownBy(() -> store().reconcileReservations(identity(owner),List.of(restItem(held.id(),"race",8251,"CONFIRMED")),started))
+				.isInstanceOfSatisfying(OwnedReservationQueryException.class,
+						error -> assertThat(error.reason().name()).isEqualTo("CONCURRENT_CHANGE"));
+		var stored=processes.findById(held.id()).orElseThrow();
+		assertThat(stored.getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(stored.getExternalReservationId()).isNull(); assertThat(stored.getVersion()).isEqualTo(1);
+	}
+
+	@Test
+	void restVerificationCannotAssignAnotherOwnerOrReuseAnExistingReservationIdentifier() {
+		var first=restHeld("owner");
+		var other=users.saveAndFlush(new UserEntity("restbob",owner.getPasswordHash(),null,null,"restbob@example.test",null,"es","test"));
+		assertThatThrownBy(() -> store().reconcileReservations(identity(other),List.of(restItem(first.id(),"owner",8251,"CONFIRMED")),Instant.now()))
+				.isInstanceOf(OwnedReservationQueryException.class);
+		store().reconcileReservations(identity(owner),List.of(restItem(first.id(),"owner",8251,"CONFIRMED")),Instant.now());
+		var second=restHeld("duplicate-id");
+		assertThatThrownBy(() -> store().reconcileReservations(identity(owner),List.of(restItem(second.id(),"duplicate-id",8251,"CONFIRMED")),Instant.now()))
+				.isInstanceOf(OwnedReservationQueryException.class);
+		assertThat(processes.findById(second.id()).orElseThrow().getExternalReservationId()).isNull();
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings={
+		"process_status='CONFIRMED',external_reservation_id=8251",
+		"rest_observed_status='CONFIRMED'",
+		"rest_verified_at=CURRENT_TIMESTAMP",
+		"rest_observed_status='UNKNOWN',rest_verified_at=CURRENT_TIMESTAMP,external_reservation_id=8251",
+		"process_status='PHONE_SUBMISSION_PENDING',rest_observed_status='PHONE_PENDING',rest_verified_at=CURRENT_TIMESTAMP,external_reservation_id=8251",
+		"process_status='WAITING_FOR_CONFIRMATION',rest_observed_status='PHONE_PENDING',rest_verified_at=CURRENT_TIMESTAMP,external_reservation_id=8251"
+	})
+	void schemaStillRejectsUnprovenConfirmationAndRestBypassesOfPhoneWorkflow(String assignments) throws SQLException {
+		var held=restHeld("constraints");
+		try(var connection=connection();var statement=connection.createStatement()) {
+			assertThatThrownBy(() -> statement.executeUpdate("UPDATE reservation_process SET "+assignments+" WHERE id="+held.id()))
+					.isInstanceOfSatisfying(SQLException.class,error -> assertThat(error.getSQLState()).isEqualTo("23514"));
+		}
+		assertThat(processes.findById(held.id()).orElseThrow().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	@Test
+	void authenticatedHttpListingAuthorizesAndCommitsRestEvidenceWithoutCatalogOrARemoteDatabaseTransaction() throws Exception {
+		var held=restHeld("http-list");
+		var authorization=new java.util.concurrent.atomic.AtomicReference<String>();
+		var target=new java.util.concurrent.atomic.AtomicReference<String>();
+		var requests=new java.util.concurrent.atomic.AtomicInteger();
+		var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+		var json=new tools.jackson.databind.json.JsonMapper();
+		server.createContext("/api/appointments",exchange -> {
+			requests.incrementAndGet(); authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+			target.set(exchange.getRequestURI().toASCIIString());
+			var row=Map.of("reservationId",8251,"reservationProcessId","process-rest-http-list","externalPatientId","user-"+owner.getId(),
+					"appointmentDate",DATE.toString(),"startTime",TIME.toString(),"endTime",TIME.plusMinutes(30).toString(),
+					"professionalId",Long.MAX_VALUE,"status","CONFIRMED","createdAt",Instant.now().minusSeconds(60).toString());
+			byte[] body=json.writeValueAsBytes(List.of(row));
+			exchange.getResponseHeaders().set("Content-Type","application/json");
+			exchange.getResponseHeaders().set("X-Total-Count","1");
+			exchange.sendResponseHeaders(200,body.length);
+			try(var output=exchange.getResponseBody()) { output.write(body); }
+		});
+		server.start();
+		try {
+			var properties=new ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties(
+					"test-group","test-only-owned-list-jwt",
+					new ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties.RestProperties(
+							"http://127.0.0.1:"+server.getAddress().getPort(),java.time.Duration.ofSeconds(2),java.time.Duration.ofSeconds(5)),
+					new ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties.KafkaProperties(
+							"kafka.example.invalid:9092","test-group","test-actions","test-phone"));
+			var transport=new ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.config.CatedraRestClientConfiguration().catedraRestClient(properties,json);
+			var adapter=new ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.adapter.CatedraTechnicalReservationAdapter(
+					new ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.client.CatedraReservationListingClient(transport));
+			TechnicalReservationSource remote=query -> {
+				assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+				return adapter.list(query);
+			};
+			var useCase=new ListOwnedReservationsUseCase(() -> identity(owner),remote,store(),java.time.Clock.systemUTC());
+			var result=useCase.list(new OwnedReservationQuery(TechnicalReservation.Status.CONFIRMED,DATE,DATE,0,20));
+			assertThat(result.total()).isEqualTo(1); assertThat(result.items().getFirst().localProcessId()).isEqualTo(held.id());
+			assertThat(result.items().getFirst().localStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+			var stored=processes.findById(held.id()).orElseThrow();
+			assertThat(stored.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+			assertThat(stored.getExternalReservationId()).isEqualTo(8251L); assertThat(stored.getRequestEventId()).isNull();
+			assertThat(result.items().getFirst().verifiedAt()).isEqualTo(stored.getRestVerifiedAt());
+			assertThat(authorization.get()).isEqualTo("Bearer test-only-owned-list-jwt");
+			assertThat(target.get()).contains("externalPatientId=user-"+owner.getId(),"status=CONFIRMED","page=0","size=100");
+			assertThat(requests).hasValue(1);
+			verifyNoInteractions(context.getBean(CurrentProfessionalSource.class));
+		} finally { server.stop(0); }
+	}
+
+	@Test
+	void twoUsersInOneTechnicalAccountQueryAndReconcileOnlyTheirOwnProcesses() {
+		var alice=restHeld("alice-list");
+		var bob=users.saveAndFlush(new UserEntity("listbob",owner.getPasswordHash(),null,null,"listbob@example.test",null,"es","test"));
+		var bobHeld=store().createHeld(identity(bob),selection(),new AppointmentHold("hold-rest-bob-list","process-rest-bob-list",EXPIRY));
+		TechnicalReservationSource remote=query -> {
+			boolean isAlice=query.externalPatientId().equals("user-"+owner.getId());
+			var row=new TechnicalReservation(isAlice?8251:8252,isAlice?"process-rest-alice-list":"process-rest-bob-list",
+					query.externalPatientId(),DATE,TIME,TIME.plusMinutes(30),Long.MAX_VALUE,"Same name",null,"Same patient",null,null,
+					TechnicalReservation.Status.CONFIRMED,Instant.now().minusSeconds(60),null,null,null);
+			return new TechnicalReservationPage(List.of(row),1);
+		};
+		var aliceResult=new ListOwnedReservationsUseCase(() -> identity(owner),remote,store(),java.time.Clock.systemUTC()).list(new OwnedReservationQuery(null,null,null,0,20));
+		assertThat(aliceResult.items()).extracting(item -> item.localProcessId()).containsExactly(alice.id());
+		assertThat(processes.findById(bobHeld.id()).orElseThrow().getRestVerifiedAt()).isNull();
+		var bobResult=new ListOwnedReservationsUseCase(() -> identity(bob),remote,store(),java.time.Clock.systemUTC()).list(new OwnedReservationQuery(null,null,null,0,20));
+		assertThat(bobResult.items()).extracting(item -> item.localProcessId()).containsExactly(bobHeld.id());
+		assertThat(processes.findById(alice.id()).orElseThrow().getOwner().getId()).isEqualTo(owner.getId());
+		assertThat(processes.findById(bobHeld.id()).orElseThrow().getOwner().getId()).isEqualTo(bob.getId());
+	}
+
+	@Test
+	void aMixedOwnershipResponseCannotExposeOrReconcileTheValidRowsBeforeTheConflict() {
+		var alice=restHeld("mixed-alice");
+		var bob=users.saveAndFlush(new UserEntity("mixedbob",owner.getPasswordHash(),null,null,"mixedbob@example.test",null,"es","test"));
+		var bobHeld=store().createHeld(identity(bob),selection(),new AppointmentHold("hold-rest-mixed-bob","process-rest-mixed-bob",EXPIRY));
+		var foreign=new TechnicalReservation(8252,"process-rest-mixed-bob","user-"+owner.getId(),DATE,TIME,TIME.plusMinutes(30),Long.MAX_VALUE,
+				null,null,null,null,null,TechnicalReservation.Status.CONFIRMED,Instant.now().minusSeconds(60),null,null,null);
+		TechnicalReservationSource remote=query -> new TechnicalReservationPage(List.of(restItem(alice.id(),"mixed-alice",8251,"CONFIRMED").reservation(),foreign),2);
+		var useCase=new ListOwnedReservationsUseCase(() -> identity(owner),remote,store(),java.time.Clock.systemUTC());
+		assertThatThrownBy(() -> useCase.list(new OwnedReservationQuery(null,null,null,0,20)))
+				.isInstanceOfSatisfying(OwnedReservationQueryException.class,error -> assertThat(error.reason().name()).isEqualTo("CONFLICTING_ASSOCIATION"));
+		assertThat(processes.findById(alice.id()).orElseThrow().getRestVerifiedAt()).isNull();
+		assertThat(processes.findById(bobHeld.id()).orElseThrow().getRestVerifiedAt()).isNull();
+	}
+
+	@Test
+	void ownedPaginationCountsOnlyAssociatedRowsAndReconcilesEveryAuthorizedPage() {
+		var first=restHeld("pages-a");
+		var second=store().createHeld(identity(owner),new StartReservationCommand(Long.MAX_VALUE,DATE,TIME.plusMinutes(30)),
+				new AppointmentHold("hold-rest-pages-b","process-rest-pages-b",EXPIRY));
+		var rows=new ArrayList<TechnicalReservation>();
+		for(int i=0;i<99;i++) {
+			rows.add(new TechnicalReservation(10000+i,"orphan-"+i,"user-"+owner.getId(),DATE,TIME,TIME.plusMinutes(30),300+i,
+					null,null,null,null,null,TechnicalReservation.Status.CONFIRMED,Instant.now().minusSeconds(60),null,null,null));
+		}
+		rows.add(restItem(first.id(),"pages-a",8251,"CONFIRMED").reservation());
+		rows.add(new TechnicalReservation(8252,"process-rest-pages-b","user-"+owner.getId(),DATE,TIME.plusMinutes(30),TIME.plusMinutes(60),Long.MAX_VALUE,
+				null,null,null,null,null,TechnicalReservation.Status.CONFIRMED,Instant.now().minusSeconds(60),null,null,null));
+		var calls=new java.util.concurrent.atomic.AtomicInteger();
+		TechnicalReservationSource remote=query -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			assertThat(query.externalPatientId()).isEqualTo("user-"+owner.getId());
+			assertThat(query.page()).isEqualTo(calls.getAndIncrement());
+			int from=query.page()*100; int to=Math.min(from+100,rows.size());
+			return new TechnicalReservationPage(rows.subList(from,to),rows.size());
+		};
+		var result=new ListOwnedReservationsUseCase(() -> identity(owner),remote,store(),java.time.Clock.systemUTC())
+				.list(new OwnedReservationQuery(null,null,null,1,1));
+		assertThat(result.total()).isEqualTo(2);
+		assertThat(result.items()).extracting(item -> item.localProcessId()).containsExactly(second.id());
+		assertThat(calls).hasValue(2);
+		assertThat(processes.findById(first.id()).orElseThrow().getRestVerifiedAt()).isNotNull();
+		assertThat(processes.findById(second.id()).orElseThrow().getRestVerifiedAt()).isNotNull();
+		assertThat(processes.count()).isEqualTo(2);
+	}
+
+	private HeldReservationProcess restHeld(String suffix) {
+		return store().createHeld(identity(owner),selection(),new AppointmentHold("hold-rest-"+suffix,"process-rest-"+suffix,EXPIRY));
+	}
+	private OwnedReservationPage.Item restItem(long localId,String suffix,long reservationId,String status) {
+		var row=new TechnicalReservation(reservationId,"process-rest-"+suffix,"user-"+owner.getId(),DATE,TIME,TIME.plusMinutes(30),Long.MAX_VALUE,
+				null,null,null,null,null,TechnicalReservation.Status.valueOf(status),Instant.now().minusSeconds(60),null,null,null);
+		return new OwnedReservationPage.Item(localId,row);
+	}
+	private long queryRestInboxCount() {
+		return context.getBean(ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.ReservationEventInboxJpaRepository.class).count();
 	}
 
 	private static String requiredEnvironment(String name) {

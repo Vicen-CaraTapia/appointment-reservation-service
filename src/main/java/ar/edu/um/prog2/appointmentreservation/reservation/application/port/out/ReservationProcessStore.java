@@ -1,5 +1,11 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.application.port.out;
 
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationPage;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationReconciliation;
+import java.util.List;
+import java.util.Set;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
+
 import java.util.Optional;
 import java.time.Instant;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
@@ -13,6 +19,22 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Init
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
 
 public interface ReservationProcessStore {
+
+	/**
+	 * Revalidates the complete authorized batch under local locks and commits all effects atomically.
+	 * queryStartedAt precedes remote I/O. Newer local writes or contradictory evidence reject the batch.
+	 * No remote calls, synthetic event IDs or changes inferred from missing rows are permitted.
+	 */
+	List<ReservationReconciliation> reconcileReservations(
+			AuthenticatedReservationUser owner,
+			List<OwnedReservationPage.Item> observations,
+			Instant queryStartedAt);
+
+
+	/** Bounded local identity lookup by either external ID, including contradictions across owners; no state mutation. */
+	List<ReservationAssociation>
+			findReservationAssociations(Set<String> processIds, Set<Long> reservationIds);
+
 
 	/**
 	 * Atomically saves a local HELD process owned by the authenticated user, preserving
