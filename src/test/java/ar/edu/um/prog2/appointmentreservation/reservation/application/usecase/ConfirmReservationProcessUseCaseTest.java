@@ -9,6 +9,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -28,6 +29,8 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Appo
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AuthenticatedReservationUser;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationEventReceipt;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationEventReceipt.State;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StartReservationCommand;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.AppointmentHoldConfirmer;
@@ -40,6 +43,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -66,18 +71,25 @@ class ConfirmReservationProcessUseCaseTest {
 	private final ReservationProcessStore processes = mock(ReservationProcessStore.class);
 	private final CurrentProfessionalSource professionals = mock(CurrentProfessionalSource.class);
 	private final AppointmentHoldConfirmer confirmer = mock(AppointmentHoldConfirmer.class);
+	private final ProcessReservationActionUseCase actions = mock(ProcessReservationActionUseCase.class);
 	private final Clock clock = mock(Clock.class);
 	private final ReservationSlotValidator slots = new ReservationSlotValidator(new LoadEnabledProfessionalUseCase(professionals),
 			new AvailableAppointmentSlotsCalculator());
 	private final ConfirmReservationProcessUseCase useCase =
-			new ConfirmReservationProcessUseCase(currentUser, processes, slots, confirmer, clock);
+			new ConfirmReservationProcessUseCase(currentUser, processes, slots, confirmer, clock, actions);
+
+	@BeforeEach
+	void noPendingEventsByDefault() {
+		when(actions.resumePending(anyString(), anyInt())).thenReturn(List.of());
+	}
 
 	@Test
 	void authenticatesValidatesClaimsThenConfirmsOnceAndRecordsTheAuthoritativeAcceptance() {
 		prepareAccepted();
 		when(processes.recordInitialConfirmation(123, 1, OWNER, ACCEPTED)).thenReturn(WAITING);
+		when(processes.findOwned(123, OWNER)).thenReturn(Optional.of(HELD), Optional.of(CLAIM));
 		assertThat(useCase.confirm(123, PATIENT)).isSameAs(WAITING);
-		var order = inOrder(currentUser, processes, professionals, clock, confirmer);
+		var order = inOrder(currentUser, processes, professionals, clock, confirmer, actions);
 		order.verify(currentUser).requireAuthenticated();
 		order.verify(processes).findOwned(123, OWNER);
 		order.verify(clock).instant();
@@ -87,7 +99,8 @@ class ConfirmReservationProcessUseCaseTest {
 		order.verify(clock).instant();
 		order.verify(confirmer).confirm(HOLD, "user-42", PATIENT);
 		order.verify(processes).recordInitialConfirmation(123, 1, OWNER, ACCEPTED);
-		verifyNoMoreInteractions(currentUser, processes, professionals, clock, confirmer);
+		order.verify(actions).resumePending(HOLD.reservationProcessId(), 100);
+		verifyNoMoreInteractions(currentUser, processes, professionals, clock, confirmer, actions);
 	}
 
 	@Test
@@ -95,7 +108,7 @@ class ConfirmReservationProcessUseCaseTest {
 		var failure = new ReservationAuthenticationRequiredException();
 		when(currentUser.requireAuthenticated()).thenThrow(failure);
 		assertThatThrownBy(() -> useCase.confirm(123, PATIENT)).isSameAs(failure);
-		verifyNoInteractions(processes, professionals, confirmer, clock);
+		verifyNoInteractions(processes, professionals, confirmer, clock, actions);
 	}
 
 	@Test
@@ -160,7 +173,8 @@ class ConfirmReservationProcessUseCaseTest {
 		assertThat(useCase.confirm(123, PATIENT)).isSameAs(observed);
 		verifyNoInteractions(professionals, confirmer, clock);
 		verify(processes).findOwned(123, OWNER);
-		verifyNoMoreInteractions(processes);
+		verify(actions).resumePending(HOLD.reservationProcessId(), 100);
+		verifyNoMoreInteractions(processes, actions);
 	}
 
 	@ParameterizedTest
@@ -268,6 +282,35 @@ class ConfirmReservationProcessUseCaseTest {
 		assertThat(useCase.confirm(123, PATIENT)).isSameAs(WAITING);
 		verify(processes, times(2)).findOwned(123, OWNER);
 		verify(processes, never()).releaseInitialConfirmation(anyLong(), anyLong(), any());
+		verify(confirmer).confirm(HOLD, "user-42", PATIENT);
+		verifyNoMoreInteractions(confirmer);
+	}
+
+	@Test
+	void aKafkaEventThatAdvancedTheProcessBeforeTheRestResponseIsReturnedWithoutRegression() {
+		prepareAccepted();
+		var confirmed = observation(ReservationProcessStatus.CONFIRMED);
+		when(processes.recordInitialConfirmation(123, 1, OWNER, ACCEPTED))
+				.thenThrow(new ReservationProcessStateException(ReservationProcessStateException.Reason.CONFLICT));
+		when(processes.findOwned(123, OWNER)).thenReturn(Optional.of(HELD), Optional.of(confirmed));
+		assertThat(useCase.confirm(123, PATIENT)).isSameAs(confirmed);
+		verify(actions).resumePending(HOLD.reservationProcessId(), 100);
+		verify(confirmer).confirm(HOLD, "user-42", PATIENT);
+		verifyNoMoreInteractions(confirmer);
+	}
+
+	@Test
+	void acceptedRestResponseResumesPreviouslyDeferredDurableEvents() {
+		prepareAccepted();
+		var confirmed = observation(ReservationProcessStatus.CONFIRMED);
+		when(processes.recordInitialConfirmation(123, 1, OWNER, ACCEPTED)).thenReturn(WAITING);
+		when(processes.findOwned(123, OWNER)).thenReturn(Optional.of(HELD), Optional.of(confirmed));
+		when(actions.resumePending(HOLD.reservationProcessId(), 100)).thenReturn(List.of(
+				new ReservationEventReceipt("confirmation-1", State.APPLIED, 123L, false)));
+
+		assertThat(useCase.confirm(123, PATIENT)).isSameAs(confirmed);
+
+		verify(actions).resumePending(HOLD.reservationProcessId(), 100);
 		verify(confirmer).confirm(HOLD, "user-42", PATIENT);
 		verifyNoMoreInteractions(confirmer);
 	}

@@ -21,6 +21,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.kafka.event.CatedraAppointmentActionListener;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -57,6 +61,8 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.re
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -317,6 +323,50 @@ class ReservationProcessConfirmationHttpIT {
 		assertThat(response.body()).contains("Remote acceptance may exist", "Do not automatically repeat");
 		assertThat(process(id).getExpiresAt()).isEqualTo(holdExpiry);
 		assertPendingWithoutResend(id);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"AppointmentConfirmed", "AppointmentProcessExpired", "AppointmentProcessInvalid"})
+	void earlyKafkaOutcomeIsReturnedAfterRestAcceptanceWithoutAnotherPostOrStateRegression(String type) throws Exception {
+		long id = startOwnedProcess();
+		blockConfirmation = true;
+		var response = CompletableFuture.supplyAsync(() -> {
+			try { return confirm(id, token, PATIENT_JSON); }
+			catch (Exception failure) { throw new CompletionException(failure); }
+		});
+		String expected = switch (type) {
+			case "AppointmentConfirmed" -> "CONFIRMED";
+			case "AppointmentProcessExpired" -> "EXPIRED";
+			default -> "INVALID";
+		};
+		Instant authoritativeExpiry = acceptedExpiry.truncatedTo(ChronoUnit.MICROS);
+		long version;
+		try {
+			assertThat(remoteEntered.await(5, TimeUnit.SECONDS)).isTrue();
+			assertThat(process(id).getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMATION_PENDING);
+			var request = json.createObjectNode().put("schemaVersion", 1).put("eventId", "early-request")
+					.put("eventType", "AdditionalInformationRequested").put("reservationProcessId", "test-process")
+					.put("holdId", "test-hold").put("requiredField", "PHONE_NUMBER").put("message", "Provide a phone")
+					.put("expiresAt", authoritativeExpiry.toString()).put("occurredAt", Instant.now().toString());
+			var listener = context.getBean(CatedraAppointmentActionListener.class);
+			listener.receive(new ConsumerRecord<>("test.appointment.actions", 0, 1, "test-process", json.writeValueAsString(request)));
+			var result = json.createObjectNode().put("schemaVersion", 1).put("eventId", "early-result").put("eventType", type)
+					.put("groupId", "test-project").put("reservationProcessId", "test-process").put("holdId", "test-hold")
+					.put("requestEventId", "early-request").put("occurredAt", Instant.now().toString());
+			if (type.equals("AppointmentConfirmed")) {
+				result.put("status", "CONFIRMED").put("reservationId", 8251).put("professionalId", 202)
+						.put("date", DATE.toString()).put("startTime", "18:00:00");
+			} else { result.put("reason", type.equals("AppointmentProcessExpired") ? "HOLD_EXPIRED" : "REQUEST_EVENT_MISMATCH"); }
+			listener.receive(new ConsumerRecord<>("test.appointment.actions", 0, 2, "test-process", json.writeValueAsString(result)));
+			assertThat(process(id).getStatus().name()).isEqualTo(expected);
+			version = process(id).getVersion();
+		} finally { remoteRelease.countDown(); }
+		assertAccepted(response.get(15, TimeUnit.SECONDS), id, expected, authoritativeExpiry);
+		assertThat(process(id).getStatus().name()).isEqualTo(expected);
+		assertThat(process(id).getVersion()).isEqualTo(version);
+		assertThat(confirmationPosts).hasValue(1);
+		verify(catalog).load(202);
+		verifyNoMoreInteractions(catalog);
 	}
 
 	private long startOwnedProcess() throws Exception {

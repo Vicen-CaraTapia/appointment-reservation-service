@@ -69,6 +69,12 @@
 		</dependency>
 
 		<dependency>
+			<groupId>org.springframework.kafka</groupId>
+			<artifactId>spring-kafka-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
 			<groupId>org.springframework.security</groupId>
 			<artifactId>spring-security-crypto</artifactId>
 		</dependency>
@@ -163,7 +169,9 @@
 										<include>**/FlywayMigrationIT.java</include>
 										<include>**/UserPersistenceIT.java</include>
 										<include>**/ReservationProcessPersistenceIT.java</include>
+										<include>**/ReservationEventPersistenceIT.java</include>
 										<include>**/ReservationProcessConfirmationHttpIT.java</include>
+										<include>**/ReservationProcessPhoneHttpIT.java</include>
 										<include>**/UserRegistrationIT.java</include>
 										<include>**/UserRegistrationHttpIT.java</include>
 										<include>**/FinalUserAuthenticationHttpIT.java</include>
@@ -211,6 +219,36 @@
 			</build>
 		</profile>
 		<profile>
+			<id>embedded-kafka-integration</id>
+			<build>
+				<plugins>
+					<plugin>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>default</id>
+								<phase>none</phase>
+							</execution>
+							<execution>
+								<id>embedded-kafka-it</id>
+								<configuration>
+									<includes>
+										<include>**/CatedraAppointmentActionListenerKafkaIT.java</include>
+									<include>**/CatedraPhoneSubmissionPublisherKafkaIT.java</include>
+									</includes>
+									<summaryFile>${project.build.directory}/failsafe-reports/embedded-kafka-summary.xml</summaryFile>
+								</configuration>
+								<goals>
+									<goal>integration-test</goal>
+									<goal>verify</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+		<profile>
 			<id>catalog-integration</id>
 			<build>
 				<plugins>
@@ -240,6 +278,36 @@
 				</plugins>
 			</build>
 		</profile>
+		<profile>
+			<id>asynchronous-workflow-integration</id>
+			<build>
+				<plugins>
+					<plugin>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>default</id>
+								<phase>none</phase>
+							</execution>
+							<execution>
+								<id>asynchronous-workflow-it</id>
+								<configuration>
+									<includes>
+										<include>**/AsynchronousReservationWorkflowIT.java</include>
+									</includes>
+									<summaryFile>${project.build.directory}/failsafe-reports/asynchronous-workflow-summary.xml</summaryFile>
+								</configuration>
+								<goals>
+									<goal>integration-test</goal>
+									<goal>verify</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+
 	</profiles>
 
 </project>

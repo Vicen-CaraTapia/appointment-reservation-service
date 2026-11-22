@@ -20,6 +20,9 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.listener.CommonContainerStoppingErrorHandler;
+import org.springframework.kafka.listener.ContainerProperties.AckMode;
 
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.config.CatedraIntegrationProperties;
 
@@ -54,8 +57,9 @@ class CatedraKafkaConfigurationTest {
 				.containsEntry(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class)
 				.containsEntry(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class)
 				.containsEntry(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false)
+				.containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
 				.containsEntry(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, false)
-				.doesNotContainKeys(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, ConsumerConfig.MAX_POLL_RECORDS_CONFIG)
+				.doesNotContainKey(ConsumerConfig.MAX_POLL_RECORDS_CONFIG)
 				.doesNotContainKey(SaslConfigs.SASL_JAAS_CONFIG)
 				.doesNotContainValue(properties().technicalJwt());
 	}
@@ -80,13 +84,17 @@ class CatedraKafkaConfigurationTest {
 				.run(context -> {
 					assertThat(context).hasNotFailed();
 					assertThat(context).hasSingleBean(ConsumerFactory.class)
-							.hasSingleBean(ProducerFactory.class).hasSingleBean(KafkaTemplate.class);
+							.hasSingleBean(ProducerFactory.class).hasSingleBean(KafkaTemplate.class)
+							.hasSingleBean(CommonContainerStoppingErrorHandler.class);
 					ConsumerFactory<?, ?> consumer = context.getBean(ConsumerFactory.class);
 					ProducerFactory<?, ?> producer = context.getBean(ProducerFactory.class);
 					KafkaTemplate<?, ?> template = context.getBean(KafkaTemplate.class);
+					ConcurrentKafkaListenerContainerFactory<?, ?> listenerFactory = context
+							.getBean("catedraKafkaListenerContainerFactory", ConcurrentKafkaListenerContainerFactory.class);
+					assertThat(listenerFactory.getContainerProperties().getAckMode()).isEqualTo(AckMode.RECORD);
 					assertThat(template.getProducerFactory()).isSameAs(producer);
 					assertThat(template.getDefaultTopic()).isNull();
-					assertThat(context.getBeansOfType(KafkaListenerEndpointRegistry.class)).isEmpty();
+					assertThat(context.getBeansOfType(KafkaListenerEndpointRegistry.class)).hasSize(1);
 					assertThat(context.getBeansOfType(MessageListenerContainer.class)).isEmpty();
 					Stream.of(consumer, producer, template).forEach(bean ->
 							assertThat(mockingDetails(bean).getInvocations())

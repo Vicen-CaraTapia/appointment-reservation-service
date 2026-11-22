@@ -58,6 +58,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.A
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.service.ReservationSlotValidator;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ConfirmReservationProcessUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ProcessReservationActionUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.security.SpringCurrentReservationUser;
 import ar.edu.um.prog2.appointmentreservation.support.FinalUserJwtTestSupport;
@@ -151,7 +152,8 @@ class ReservationProcessConfirmationControllerTest {
 		var remote = mock(AppointmentHoldConfirmer.class);
 		var owner = new AuthenticatedReservationUser(42, "alice");
 		when(store.findOwned(123, owner)).thenReturn(Optional.of(process(observed)));
-		var useCase = new ConfirmReservationProcessUseCase(new SpringCurrentReservationUser(), store, slots, remote, Clock.systemUTC());
+		var useCase = new ConfirmReservationProcessUseCase(new SpringCurrentReservationUser(), store, slots, remote,
+				Clock.systemUTC(), mock(ProcessReservationActionUseCase.class));
 		when(confirmReservation.confirm(anyLong(), any())).thenAnswer(call -> useCase.confirm(call.getArgument(0), call.getArgument(1)));
 		for (int click = 0; click < 2; click++) {
 			perform(PATH, JSON).andExpect(status().isAccepted()).andExpect(jsonPath("$.status").value(observed.name()));
@@ -190,7 +192,7 @@ class ReservationProcessConfirmationControllerTest {
 		when(remote.confirm(HOLD, "user-42", PATIENT)).thenReturn(accepted);
 		when(store.recordInitialConfirmation(123, 1, owner, accepted)).thenReturn(saved);
 		var useCase = new ConfirmReservationProcessUseCase(new SpringCurrentReservationUser(), store, slots, remote,
-				Clock.fixed(now, ZoneOffset.UTC));
+				Clock.fixed(now, ZoneOffset.UTC), mock(ProcessReservationActionUseCase.class));
 		when(confirmReservation.confirm(anyLong(), any())).thenAnswer(call -> useCase.confirm(call.getArgument(0), call.getArgument(1)));
 		perform(PATH + "?userId=99&ownerUserId=99&externalPatientId=user-99", JSON)
 				.andExpect(status().isAccepted()).andExpect(jsonPath("$.status").value("WAITING_FOR_PHONE"))
@@ -276,7 +278,8 @@ class ReservationProcessConfirmationControllerTest {
 		var owner = new AuthenticatedReservationUser(42, "alice");
 		when(store.findOwned(123, owner)).thenReturn(Optional.empty());
 		when(store.findOwned(999, owner)).thenReturn(Optional.empty());
-		var useCase = new ConfirmReservationProcessUseCase(new SpringCurrentReservationUser(), store, slots, remote, Clock.systemUTC());
+		var useCase = new ConfirmReservationProcessUseCase(new SpringCurrentReservationUser(), store, slots, remote,
+				Clock.systemUTC(), mock(ProcessReservationActionUseCase.class));
 		when(confirmReservation.confirm(anyLong(), any())).thenAnswer(call -> useCase.confirm(call.getArgument(0), call.getArgument(1)));
 		String foreign = perform(PATH + "?userId=99&ownerUserId=99&externalPatientId=user-99", JSON)
 				.andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("RESERVATION_PROCESS_NOT_FOUND"))

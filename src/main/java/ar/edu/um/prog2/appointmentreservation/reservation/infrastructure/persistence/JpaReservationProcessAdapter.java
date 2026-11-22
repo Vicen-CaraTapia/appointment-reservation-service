@@ -1,6 +1,8 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
 import java.time.Instant;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationEventReceipt;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 import java.util.Optional;
@@ -52,6 +54,14 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 		} catch (RuntimeException failure) {
 			throw new ReservationProcessStateException(Reason.STORAGE_FAILURE);
 		}
+	}
+
+	@Override
+	public Optional<StoredReservationProgress> findOwnedProgress(long id, AuthenticatedReservationUser owner) {
+		requireIdentity(id, owner);
+		try {
+			return reads.execute(transaction -> processes.findOwnedProgress(id, owner.userId(), ReservationEventReceipt.State.APPLIED));
+		} catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
 	}
 
 	@Override
