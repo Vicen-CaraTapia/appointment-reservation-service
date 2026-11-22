@@ -1077,6 +1077,29 @@ class ReservationEventPersistenceIT {
 		}
 	}
 
+	@Test
+	void ownedQueryRejectsAnEventCommittedDuringTheGetWithoutOverwritingOrRepeatingIt() {
+		applyRequest();
+		var calls=new java.util.concurrent.atomic.AtomicInteger();
+		ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.TechnicalReservationSource remote=query -> {
+			assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			calls.incrementAndGet();
+			events.receive(confirmed("during-get",8251,"request"));
+			assertThat(events.applyPending("during-get").state()).isEqualTo(State.APPLIED);
+			return new ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservationPage(
+					List.of(restObservation("PHONE_PENDING").reservation()),1);
+		};
+		var useCase=new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ListOwnedReservationsUseCase(
+				this::owner,remote,store,java.time.Clock.systemUTC());
+		assertThatThrownBy(() -> useCase.list(new ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationQuery(null,null,null,0,20)))
+				.isInstanceOfSatisfying(ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException.class,
+						error -> assertThat(error.reason().name()).isEqualTo("CONCURRENT_CHANGE"));
+		assertThat(calls).hasValue(1);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+		assertThat(process().getRestVerifiedAt()).isNull();
+		assertThat(events.receive(confirmed("during-get",8251,"request")).state()).isEqualTo(State.APPLIED);
+	}
+
 	private OwnedReservationPage.Item restObservation(String status) {
 		var row=new TechnicalReservation(8251,"process","user-"+ownerId,
 				SELECTION.date(),SELECTION.startTime(),SELECTION.startTime().plusMinutes(30),SELECTION.professionalId(),

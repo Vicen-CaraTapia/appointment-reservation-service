@@ -514,4 +514,7 @@ sus requisitos de solicitud e intención durable. Los IDs externos siguen siendo
 locales en orden de ID, rechaza escrituras posteriores al inicio del GET, cierra
 intenciones de teléfono al llegar a un resultado terminal y confirma todo junto.
 Una contradicción revierte el lote completo. Una ausencia no cambia ningún estado.
-En este incremento el listado todavía no invoca automáticamente esta operación.
+El listado obtiene primero todas las páginas y comprueba las asociaciones, concilia
+el lote autorizado completo y luego pagina la respuesta. Devuelve por separado el
+estado observado y el estado local verificado. El GET se ejecuta fuera de la
+transacción local; los fallos externos o resultados incompletos no disparan cambios.

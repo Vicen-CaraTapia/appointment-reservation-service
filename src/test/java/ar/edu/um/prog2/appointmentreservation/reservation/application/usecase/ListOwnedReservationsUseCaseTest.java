@@ -1,6 +1,10 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.application.usecase;
 
 import java.time.Instant;
+import java.time.Clock;
+import java.time.ZoneOffset;
+import org.junit.jupiter.api.BeforeEach;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.ArrayList;
@@ -24,11 +28,22 @@ import static org.mockito.ArgumentMatchers.any;
 
 class ListOwnedReservationsUseCaseTest {
 	private static final AuthenticatedReservationUser OWNER = new AuthenticatedReservationUser(42, "alice");
+	private static final Instant START = Instant.parse("2026-11-22T12:00:00Z");
 	private static final LocalDate DATE = LocalDate.of(2026, 12, 1);
 	private final CurrentReservationUser current = mock(CurrentReservationUser.class);
 	private final TechnicalReservationSource remote = mock(TechnicalReservationSource.class);
 	private final ReservationProcessStore processes = mock(ReservationProcessStore.class);
-	private final ListOwnedReservationsUseCase useCase = new ListOwnedReservationsUseCase(current, remote, processes);
+	private final ListOwnedReservationsUseCase useCase = new ListOwnedReservationsUseCase(current, remote, processes, Clock.fixed(START,ZoneOffset.UTC));
+
+	@BeforeEach
+	void prepareCommittedResults() {
+		when(processes.reconcileReservations(any(), anyList(), any())).thenAnswer(call -> {
+			List<OwnedReservationPage.Item> batch = call.getArgument(1);
+			return batch.stream().map(item -> new ReservationReconciliation(item.localProcessId(),
+					item.reservation().status() == TechnicalReservation.Status.PHONE_PENDING ? ReservationProcessStatus.HELD
+							: ReservationProcessStatus.valueOf(item.reservation().status().name()), START.plusSeconds(1))).toList();
+		});
+	}
 
 	private void authenticated() { when(current.requireAuthenticated()).thenReturn(OWNER); }
 	private static OwnedReservationQuery all() { return new OwnedReservationQuery(null, null, null, 0, 20); }
@@ -46,7 +61,7 @@ class ListOwnedReservationsUseCaseTest {
 		when(processes.findReservationAssociations(Set.of("process-1"), Set.of(1L))).thenReturn(List.of(association(1, 42, 1L)));
 		var result = useCase.list(all());
 		assertThat(result.total()).isEqualTo(1);
-		assertThat(result.items()).containsExactly(new OwnedReservationPage.Item(1001, row));
+		assertThat(result.items()).containsExactly(new OwnedReservationPage.Item(1001, row, ReservationProcessStatus.CONFIRMED, START.plusSeconds(1)));
 		verify(remote).list(new ReservationListQuery(null, null, null, "user-42", 0, 100, List.of()));
 		assertThat(result.toString() + result.items().getFirst()).doesNotContain("Private name", "+5492615550000");
 	}
@@ -194,6 +209,88 @@ class ListOwnedReservationsUseCaseTest {
 		assertThatThrownBy(() -> new OwnedReservationQuery(null,null,null,0,101)).isInstanceOf(IllegalArgumentException.class);
 		assertThatThrownBy(() -> new OwnedReservationQuery(null,DATE.plusDays(1),DATE,0,10)).isInstanceOf(IllegalArgumentException.class);
 		assertThat(new OwnedReservationQuery(null,DATE,null,0,100).from()).isEqualTo(DATE);
+	}
+
+	@Test void reconcilesTheEntireAuthorizedBatchBeforePublicPaginationAndPreservesRemoteOrder() {
+		authenticated();
+		var rows=List.of(row(2,"user-42"),row(1,"user-42"));
+		when(remote.list(any())).thenReturn(new TechnicalReservationPage(rows,2));
+		when(processes.findReservationAssociations(any(),any())).thenReturn(List.of(association(1,42,1L),association(2,42,2L)));
+		// Persistence locks by local ID. That order must not replace the external listing order.
+		when(processes.reconcileReservations(any(),any(),any())).thenReturn(List.of(
+				new ReservationReconciliation(1001,ReservationProcessStatus.CONFIRMED,START.plusSeconds(1)),
+				new ReservationReconciliation(1002,ReservationProcessStatus.CONFIRMED,START.plusSeconds(1))));
+		var result=useCase.list(new OwnedReservationQuery(null,null,null,0,1));
+		assertThat(result.items()).extracting(item -> item.reservation().reservationId()).containsExactly(2L);
+		assertThat(result.total()).isEqualTo(2);
+		var order=inOrder(remote,processes);
+		order.verify(remote).list(any());
+		order.verify(processes).findReservationAssociations(any(),any());
+		order.verify(processes).reconcileReservations(eq(OWNER),argThat(batch -> batch.size()==2
+				&& batch.getFirst().localProcessId()==1002 && batch.getLast().localProcessId()==1001),eq(START));
+	}
+
+	@Test void aForeignAssociationPreventsReconciliationOfTheOtherwiseValidRows() {
+		authenticated();
+		when(remote.list(any())).thenReturn(new TechnicalReservationPage(List.of(row(1,"user-42"),row(2,"user-42")),2));
+		when(processes.findReservationAssociations(any(),any())).thenReturn(List.of(association(1,42,1L),association(2,43,2L)));
+		assertFailure(all(),Reason.CONFLICTING_ASSOCIATION);
+		verify(processes,never()).reconcileReservations(any(),any(),any());
+	}
+
+	@Test void laterPageFailureNeverReconcilesTheEarlierPage() {
+		authenticated();
+		var first=IntStream.rangeClosed(1,100).mapToObj(id -> row(id,"user-42")).toList();
+		when(remote.list(any())).thenReturn(new TechnicalReservationPage(first,101))
+				.thenThrow(new ReservationListingException(ReservationListingException.Reason.TIMEOUT));
+		assertThatThrownBy(() -> useCase.list(all())).isInstanceOf(ReservationListingException.class);
+		verifyNoInteractions(processes);
+		verify(remote,times(2)).list(any());
+	}
+
+	@Test void databaseFailureDoesNotBecomeAnEmptySuccessfulListOrTriggerAnotherRemoteRequest() {
+		authenticated();
+		when(remote.list(any())).thenReturn(new TechnicalReservationPage(List.of(row(1,"user-42")),1));
+		when(processes.findReservationAssociations(any(),any())).thenReturn(List.of(association(1,42,1L)));
+		var failure=new ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException(
+				ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException.Reason.STORAGE_FAILURE);
+		when(processes.reconcileReservations(any(),any(),any())).thenThrow(failure);
+		assertThatThrownBy(() -> useCase.list(all())).isSameAs(failure);
+		verify(remote).list(any()); verify(processes).reconcileReservations(eq(OWNER),any(),eq(START));
+	}
+
+	@Test void aConcurrentEventIsReportedWithoutReturningAnUncommittedObservation() {
+		authenticated();
+		when(remote.list(any())).thenReturn(new TechnicalReservationPage(List.of(row(1,"user-42")),1));
+		when(processes.findReservationAssociations(any(),any())).thenReturn(List.of(association(1,42,1L)));
+		when(processes.reconcileReservations(any(),any(),any())).thenThrow(new OwnedReservationQueryException(Reason.CONCURRENT_CHANGE));
+		assertFailure(all(),Reason.CONCURRENT_CHANGE);
+		verify(processes).reconcileReservations(eq(OWNER),any(),eq(START));
+	}
+
+	@Test void knownLocalExpiryRemainsDistinctFromTheGenericRemoteFailedStatus() {
+		authenticated();
+		var remoteRow=with(row(1,"user-42"),DATE,TechnicalReservation.Status.FAILED);
+		when(remote.list(any())).thenReturn(new TechnicalReservationPage(List.of(remoteRow),1));
+		when(processes.findReservationAssociations(any(),any())).thenReturn(List.of(association(1,42,1L)));
+		when(processes.reconcileReservations(any(),any(),any())).thenReturn(List.of(
+				new ReservationReconciliation(1001,ReservationProcessStatus.EXPIRED,START.plusSeconds(1))));
+		var item=useCase.list(all()).items().getFirst();
+		assertThat(item.reservation().status()).isEqualTo(TechnicalReservation.Status.FAILED);
+		assertThat(item.localStatus()).isEqualTo(ReservationProcessStatus.EXPIRED);
+		assertThat(item.verifiedAt()).isEqualTo(START.plusSeconds(1));
+	}
+
+	@ParameterizedTest @ValueSource(strings={"missing","wrongProcess","missingState","missingTime","staleTime"})
+	void doesNotReturnItemsWithoutTheirOwnCommittedVerification(String invalid) {
+		authenticated();
+		when(remote.list(any())).thenReturn(new TechnicalReservationPage(List.of(row(1,"user-42")),1));
+		when(processes.findReservationAssociations(any(),any())).thenReturn(List.of(association(1,42,1L)));
+		var result=new ReservationReconciliation(invalid.equals("wrongProcess")?1002:1001,
+				invalid.equals("missingState")?null:ReservationProcessStatus.CONFIRMED,
+				invalid.equals("missingTime")?null:invalid.equals("staleTime")?START.minusSeconds(1):START.plusSeconds(1));
+		when(processes.reconcileReservations(any(),any(),any())).thenReturn(invalid.equals("missing")?List.of():List.of(result));
+		assertFailure(all(),Reason.INVALID_RESPONSE);
 	}
 
 	private void assertFailure(OwnedReservationQuery query,Reason reason) {

@@ -38,7 +38,7 @@ public class ReservationProcessConfiguration {
 	@Bean
 	public ListOwnedReservationsUseCase listOwnedReservationsUseCase(CurrentReservationUser currentUser,
 			TechnicalReservationSource remote, ReservationProcessStore processes) {
-		return new ListOwnedReservationsUseCase(currentUser, remote, processes);
+		return new ListOwnedReservationsUseCase(currentUser, remote, processes, Clock.systemUTC());
 	}
 
 

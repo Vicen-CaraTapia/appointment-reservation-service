@@ -47,6 +47,7 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 	private final ReservationProcessJpaRepository processes;
 	private final TransactionTemplate transactions;
 	private final TransactionTemplate reads;
+	private final TransactionTemplate reconciliations;
 
 	public JpaReservationProcessAdapter(UserJpaRepository users, ReservationProcessJpaRepository processes,
 			PhoneSubmissionJpaRepository submissions, PlatformTransactionManager transactionManager) {
@@ -54,6 +55,8 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 		this.submissions = Objects.requireNonNull(submissions);
 		this.processes = Objects.requireNonNull(processes);
 		this.transactions = new TransactionTemplate(Objects.requireNonNull(transactionManager));
+		this.reconciliations = new TransactionTemplate(transactionManager);
+		this.reconciliations.setTimeout(10);
 		this.reads = new TransactionTemplate(transactionManager);
 		this.reads.setReadOnly(true);
 	}
@@ -69,7 +72,7 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 		}
 		if (batch.isEmpty()) { return List.of(); }
 		try {
-			return transactions.execute(transaction -> reconcileBatch(owner, batch, queryStartedAt));
+			return reconciliations.execute(transaction -> reconcileBatch(owner, batch, queryStartedAt));
 		} catch (OwnedReservationQueryException failure) { throw failure; }
 		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
 	}

@@ -1,5 +1,10 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.application.usecase;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.stream.Collectors;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationReconciliation;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -22,22 +27,25 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.R
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.TechnicalReservationSource;
 
 /**
- * Read-only query: no owner is inferred from names or from the remote patient filter alone.
+ * No owner is inferred from names or from the remote patient filter alone.
  * Unassociated rows are excluded; contradictory associations fail the entire query.
  * All bounded remote pages are read before authorization and local pagination, so remote totals
  * and links cannot reveal unassociated rows. Partial/changing results fail rather than truncate.
  * REST pagination is not a transactional snapshot: absence never proves local deletion or failure.
- * No workflow state, audit field or association is changed by this increment.
+ * Only the complete authorized batch is reconciled, in one short local transaction after remote I/O.
+ * Returned items distinguish committed local state from the external observation.
  */
 public final class ListOwnedReservationsUseCase {
 	private static final int REMOTE_PAGE_SIZE = 100;
 	private static final int MAX_REMOTE_PAGES = 10;
+	private final Clock clock;
 	private final CurrentReservationUser currentUser;
 	private final TechnicalReservationSource remote;
 	private final ReservationProcessStore processes;
 
 	public ListOwnedReservationsUseCase(CurrentReservationUser currentUser, TechnicalReservationSource remote,
-			ReservationProcessStore processes) {
+			ReservationProcessStore processes, Clock clock) {
+		this.clock = Objects.requireNonNull(clock);
 		this.currentUser = Objects.requireNonNull(currentUser);
 		this.remote = Objects.requireNonNull(remote);
 		this.processes = Objects.requireNonNull(processes);
@@ -46,12 +54,30 @@ public final class ListOwnedReservationsUseCase {
 	public OwnedReservationPage list(OwnedReservationQuery query) {
 		var owner = currentUser.requireAuthenticated();
 		Objects.requireNonNull(query, "Owned reservation filters are required");
+		Instant queryStartedAt = clock.instant();
 		var rows = collect(query, ExternalPatientId.fromUserId(owner.userId()));
 		var authorized = authorize(rows, owner);
+		var verified = reconcile(owner, authorized, queryStartedAt);
 		long offset = (long) query.page() * query.size();
-		int from = (int) Math.min(offset, authorized.size());
-		int to = (int) Math.min(offset + query.size(), authorized.size());
-		return new OwnedReservationPage(authorized.subList(from, to), authorized.size(), query.page(), query.size());
+		int from = (int) Math.min(offset, verified.size());
+		int to = (int) Math.min(offset + query.size(), verified.size());
+		return new OwnedReservationPage(verified.subList(from, to), verified.size(), query.page(), query.size());
+	}
+
+	private List<OwnedReservationPage.Item> reconcile(AuthenticatedReservationUser owner,
+			List<OwnedReservationPage.Item> authorized, Instant queryStartedAt) {
+		if (authorized.isEmpty()) { return List.of(); }
+		var result = processes.reconcileReservations(owner, authorized, queryStartedAt);
+		var byId = result.stream().collect(Collectors.toMap(ReservationReconciliation::localProcessId, item -> item));
+		if (byId.size() != authorized.size()) { throw failure(Reason.INVALID_RESPONSE); }
+		return authorized.stream().map(item -> {
+			var verified = byId.get(item.localProcessId());
+			if (verified == null || verified.status() == null || verified.verifiedAt() == null
+					|| verified.verifiedAt().isBefore(queryStartedAt.truncatedTo(ChronoUnit.MICROS))) {
+				throw failure(Reason.INVALID_RESPONSE);
+			}
+			return new OwnedReservationPage.Item(item.localProcessId(), item.reservation(), verified.status(), verified.verifiedAt());
+		}).toList();
 	}
 
 	private List<TechnicalReservation> collect(OwnedReservationQuery query, String patientId) {
