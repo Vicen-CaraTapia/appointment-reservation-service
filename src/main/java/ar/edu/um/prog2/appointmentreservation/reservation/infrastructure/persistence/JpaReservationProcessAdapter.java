@@ -1,5 +1,9 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import java.util.List;
+import java.util.Set;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
+
 import java.time.Instant;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationEventReceipt;
@@ -43,6 +47,20 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 		this.transactions = new TransactionTemplate(Objects.requireNonNull(transactionManager));
 		this.reads = new TransactionTemplate(transactionManager);
 		this.reads.setReadOnly(true);
+	}
+
+	@Override
+	public List<ReservationAssociation>
+			findReservationAssociations(Set<String> processIds, Set<Long> reservationIds) {
+		Objects.requireNonNull(processIds, "Process identifiers are required");
+		Objects.requireNonNull(reservationIds, "Reservation identifiers are required");
+		if (processIds.size() > 1000 || reservationIds.size() > 1000) {
+			throw new IllegalArgumentException("Reservation association lookup exceeds the bounded query size");
+		}
+		if (processIds.isEmpty() && reservationIds.isEmpty()) { return List.of(); }
+		try {
+			return reads.execute(transaction -> List.copyOf(processes.findReservationAssociations(processIds, reservationIds)));
+		} catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
 	}
 
 	@Override

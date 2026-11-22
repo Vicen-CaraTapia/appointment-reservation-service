@@ -1,5 +1,10 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.TechnicalReservationSource;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ListOwnedReservationsUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationQuery;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservationPage;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -1044,6 +1049,56 @@ class ReservationProcessPersistenceIT {
 			connection.setSchema(schema);
 		}
 		return connection;
+	}
+
+	@Test
+	void associationProjectionFindsEitherExternalIdentifierIncludingForeignOwnershipWithoutMutatingState() throws SQLException {
+		var held = store().createHeld(identity(owner),selection(),new AppointmentHold("hold-query-owned","process-query-owned",EXPIRY));
+		var other = users.saveAndFlush(new UserEntity("querybob",owner.getPasswordHash(),null,null,"querybob@example.test",null,"es","test"));
+		var foreign = store().createHeld(identity(other),selection(),new AppointmentHold("hold-query-foreign","process-query-foreign",EXPIRY));
+		// Fixture of a previously confirmed reservation, independent from the Kafka processing under test elsewhere.
+		try (var connection = connection(); var statement = connection.prepareStatement(
+				"UPDATE reservation_process SET process_status='CONFIRMED', external_reservation_id=8251, "
+				+ "request_event_id='query-request', patient_first_name='Test', patient_last_name='Patient' WHERE id=?")) {
+			statement.setLong(1,foreign.id()); statement.executeUpdate();
+		}
+		var before = store().findOwned(held.id(),identity(owner)).orElseThrow();
+		var result = store().findReservationAssociations(java.util.Set.of("process-query-owned"),java.util.Set.of(8251L));
+		assertThat(result).hasSize(2);
+		assertThat(result).anySatisfy(row -> {
+			assertThat(row.localProcessId()).isEqualTo(held.id()); assertThat(row.ownerUserId()).isEqualTo(owner.getId());
+			assertThat(row.externalProcessId()).isEqualTo("process-query-owned"); assertThat(row.externalReservationId()).isNull();
+			assertThat(row.appointmentDate()).isEqualTo(DATE); assertThat(row.startTime()).isEqualTo(TIME);
+			assertThat(row.professionalId()).isEqualTo(Long.MAX_VALUE);
+		});
+		assertThat(result).anySatisfy(row -> {
+			assertThat(row.localProcessId()).isEqualTo(foreign.id()); assertThat(row.ownerUserId()).isEqualTo(other.getId());
+			assertThat(row.externalReservationId()).isEqualTo(8251L);
+		});
+		assertThat(store().findOwned(held.id(),identity(owner))).contains(before);
+		assertThat(store().findReservationAssociations(java.util.Set.of("missing"),java.util.Set.of())).isEmpty();
+		assertThat(store().findReservationAssociations(java.util.Set.of(),java.util.Set.of(8251L))).hasSize(1);
+	}
+
+	@Test
+	void ownedListingUsesRealAssociationsWithoutAnOpenDatabaseTransactionDuringRemoteReads() {
+		var held = store().createHeld(identity(owner),selection(),new AppointmentHold("hold-query-workflow","process-query-workflow",EXPIRY));
+		var before = store().findOwned(held.id(),identity(owner)).orElseThrow();
+		TechnicalReservationSource remote = query -> {
+			assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			assertThat(query.externalPatientId()).isEqualTo("user-"+owner.getId());
+			var row = new TechnicalReservation(
+					9001,"process-query-workflow",query.externalPatientId(),DATE,TIME,TIME.plusMinutes(30),Long.MAX_VALUE,
+					null,null,null,null,null,TechnicalReservation.Status.PHONE_PENDING,
+					Instant.parse("2026-11-22T12:00:00Z"),null,null,null);
+			return new TechnicalReservationPage(List.of(row),1);
+		};
+		var useCase = new ListOwnedReservationsUseCase(
+				() -> identity(owner),remote,store());
+		var result = useCase.list(new OwnedReservationQuery(null,null,null,0,20));
+		assertThat(result.total()).isEqualTo(1); assertThat(result.items().getFirst().localProcessId()).isEqualTo(held.id());
+		assertThat(store().findOwned(held.id(),identity(owner))).contains(before);
+		assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
 	}
 
 	private static String requiredEnvironment(String name) {

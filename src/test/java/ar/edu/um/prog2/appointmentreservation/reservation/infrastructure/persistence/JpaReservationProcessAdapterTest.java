@@ -1,5 +1,6 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -347,6 +348,38 @@ class JpaReservationProcessAdapterTest {
 				.isInstanceOfSatisfying(ReservationProcessStateException.class,
 						failure -> assertThat(failure.reason()).isEqualTo(reason))
 				.hasNoCause().hasMessageNotContaining("private diagnostic");
+	}
+
+	@Test
+	void readsAssociationSnapshotsInAReadOnlyTransactionWithoutSavingEntities() {
+		preparePersistence();
+		var processIds = java.util.Set.of("process-opaque");
+		var reservationIds = java.util.Set.of(44L);
+		var association = new ReservationAssociation(
+				123,42,"user-42","process-opaque",44L,SELECTION.professionalId(),SELECTION.date(),SELECTION.startTime());
+		when(processes.findReservationAssociations(processIds,reservationIds)).thenReturn(java.util.List.of(association));
+		assertThat(adapter.findReservationAssociations(processIds,reservationIds)).containsExactly(association);
+		verify(manager).getTransaction(argThat(definition -> definition.isReadOnly()));
+		verify(manager).commit(transaction);
+		verify(processes,never()).saveAndFlush(any());
+	}
+
+	@Test
+	void associationLookupSanitizesDatabaseErrorsRatherThanReturningEmptyResults() {
+		preparePersistence();
+		when(processes.findReservationAssociations(any(),any())).thenThrow(new DataIntegrityViolationException("private SQL diagnostic"));
+		assertThatThrownBy(() -> adapter.findReservationAssociations(java.util.Set.of("process-opaque"),java.util.Set.of(44L)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class, error -> assertThat(error.reason()).isEqualTo(Reason.STORAGE_FAILURE))
+				.hasNoCause().hasMessageNotContaining("private SQL diagnostic");
+		verify(manager).rollback(transaction);
+	}
+
+	@Test
+	void emptyOrOversizedAssociationQueriesDoNotReachTheDatabase() {
+		assertThat(adapter.findReservationAssociations(java.util.Set.of(),java.util.Set.of())).isEmpty();
+		var ids = java.util.stream.IntStream.range(0,1001).mapToObj(Integer::toString).collect(java.util.stream.Collectors.toSet());
+		assertThatThrownBy(() -> adapter.findReservationAssociations(ids,java.util.Set.of())).isInstanceOf(IllegalArgumentException.class);
+		verifyNoInteractions(processes,manager);
 	}
 
 	private void preparePersistence() {

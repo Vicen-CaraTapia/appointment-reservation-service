@@ -1,5 +1,9 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository;
 
+import java.util.List;
+import java.util.Set;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
+
 import java.util.Optional;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationEventReceipt;
@@ -13,6 +17,14 @@ import org.springframework.data.repository.query.Param;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
 
 public interface ReservationProcessJpaRepository extends JpaRepository<ReservationProcessEntity, Long> {
+
+	@Query("select new ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation("
+			+ "p.id, p.owner.id, p.externalPatientId, p.externalReservationProcessId, p.externalReservationId, "
+			+ "p.professionalId, p.appointmentDate, p.startTime) from ReservationProcessEntity p "
+			+ "where p.externalReservationProcessId in :processIds or p.externalReservationId in :reservationIds")
+	List<ReservationAssociation> findReservationAssociations(
+			@Param("processIds") Set<String> processIds, @Param("reservationIds") Set<Long> reservationIds);
+
 
 	@Lock(LockModeType.PESSIMISTIC_WRITE)
 	@Query("select p from ReservationProcessEntity p where p.id = :id")

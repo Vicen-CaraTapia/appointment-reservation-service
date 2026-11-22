@@ -1,5 +1,9 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.application.port.out;
 
+import java.util.List;
+import java.util.Set;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
+
 import java.util.Optional;
 import java.time.Instant;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
@@ -13,6 +17,11 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Init
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
 
 public interface ReservationProcessStore {
+
+	/** Bounded local identity lookup by either external ID, including contradictions across owners; no state mutation. */
+	List<ReservationAssociation>
+			findReservationAssociations(Set<String> processIds, Set<Long> reservationIds);
+
 
 	/**
 	 * Atomically saves a local HELD process owned by the authenticated user, preserving
