@@ -4,9 +4,11 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
+import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 import org.jspecify.annotations.Nullable;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -18,6 +20,7 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.ObjectMapper;
 
+import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraPaginatedResponse;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraProblemDetails;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.exception.CatedraHttpException;
 import ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.exception.CatedraProtocolException;
@@ -37,6 +40,21 @@ public final class CatedraRestClient {
 
 	public <T> @Nullable T get(String relativePath, Class<T> responseType) {
 		return exchange(HttpMethod.GET, relativePath, null, responseType, null);
+	}
+
+	/** Strict 200 JSON and pagination metadata. The endpoint supplies an already encoded relative URI. */
+	public <T> CatedraPaginatedResponse<T> getOkWithPagination(String encodedRelativeTarget, Class<T> responseType) {
+		return execute(HttpMethod.GET, encodedRelativeTarget, null, true, (ignored, response) -> {
+			T body = readResponse(response, responseType, HttpStatus.OK);
+			if (body == null) { throw new CatedraProtocolException(); }
+			return new CatedraPaginatedResponse<>(body, headerValues(response.getHeaders(), "X-Total-Count"),
+					headerValues(response.getHeaders(), HttpHeaders.LINK));
+		});
+	}
+
+	private static List<String> headerValues(HttpHeaders headers, String name) {
+		var values = headers.get(name);
+		return values == null ? List.of() : List.copyOf(values);
 	}
 
 	public <T> @Nullable T post(String relativePath, Object body, Class<T> responseType) {
@@ -60,16 +78,23 @@ public final class CatedraRestClient {
 
 	private <T> @Nullable T exchange(HttpMethod method, String path, @Nullable Object body, Class<T> responseType,
 			@Nullable HttpStatusCode expectedStatus, boolean encodedPath) {
+		return execute(method, path, body, encodedPath,
+				(ignored, response) -> readResponse(response, responseType, expectedStatus));
+	}
+
+	private <T> T execute(HttpMethod method, String path, @Nullable Object body, boolean encodedPath,
+			RestClient.RequestHeadersSpec.ExchangeFunction<T> reader) {
 		validateRelativePath(path);
 		try {
 			var target = http.method(method);
+			URI relative = URI.create(path);
 			var request = (encodedPath
-					? target.uri(builder -> UriComponentsBuilder.fromUri(builder.build()).path(path).build(true).toUri())
+					? target.uri(builder -> UriComponentsBuilder.fromUri(builder.build()).path(relative.getRawPath()).query(relative.getRawQuery()).build(true).toUri())
 					: target.uri(path)).accept(MediaType.APPLICATION_JSON);
 			if (body != null) {
 				request.contentType(MediaType.APPLICATION_JSON).body(body);
 			}
-			return request.exchange((ignored, response) -> readResponse(response, responseType, expectedStatus));
+			return request.exchange(reader);
 		}
 		catch (ResourceAccessException exception) {
 			if (hasTimeoutCause(exception)) {
@@ -93,7 +118,9 @@ public final class CatedraRestClient {
 			throw new CatedraHttpException(status, problemDetails(response).code());
 		}
 		if (expectedStatus != null) {
-			var contentType = response.getHeaders().getContentType();
+			MediaType contentType;
+			try { contentType = response.getHeaders().getContentType(); }
+			catch (IllegalArgumentException invalidMediaType) { throw new CatedraProtocolException(); }
 			if (status.value() != expectedStatus.value() || contentType == null
 					|| !MediaType.APPLICATION_JSON.isCompatibleWith(contentType)) {
 				throw new CatedraProtocolException();
