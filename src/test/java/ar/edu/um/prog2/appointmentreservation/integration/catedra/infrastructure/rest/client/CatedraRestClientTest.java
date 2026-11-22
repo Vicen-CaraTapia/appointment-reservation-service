@@ -212,19 +212,23 @@ class CatedraRestClientTest {
 		assertThat(requests.get()).isEqualTo(1);
 	}
 
-	@Test
-	void distinguishesTransportFailureFromTimeout() throws IOException {
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void distinguishesTransportFailureFromTimeout(boolean paginated) throws IOException {
 		int unusedPort;
 		try (var socket = new ServerSocket(0)) {
 			unusedPort = socket.getLocalPort();
 		}
 		var client = client("http://127.0.0.1:" + unusedPort, Duration.ofSeconds(2));
-		assertThatThrownBy(() -> client.get("/probe", Probe.class))
-				.isInstanceOfSatisfying(CatedraTransportException.class, CatedraRestClientTest::assertSafe);
+		assertThatThrownBy(() -> {
+			if (paginated) { client.getOkWithPagination("/probe", Probe.class); }
+			else { client.get("/probe", Probe.class); }
+		}).isInstanceOfSatisfying(CatedraTransportException.class, CatedraRestClientTest::assertSafe);
 	}
 
-	@Test
-	void alsoRecognizesTimeoutDuringResponseBodyDecoding() {
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void alsoRecognizesTimeoutDuringResponseBodyDecoding(boolean paginated) {
 		var http = RestClient.builder().requestFactory((uri, method) -> {
 			var request = new MockClientHttpRequest(method, uri);
 			var response = new MockClientHttpResponse(new InputStream() {
@@ -238,8 +242,10 @@ class CatedraRestClientTest {
 			return request;
 		}).build();
 		var client = new CatedraRestClient(http, new JsonMapper());
-		assertThatThrownBy(() -> client.get("/probe", Probe.class))
-				.isInstanceOfSatisfying(CatedraTimeoutException.class, CatedraRestClientTest::assertSafe);
+		assertThatThrownBy(() -> {
+			if (paginated) { client.getOkWithPagination("/probe", Probe.class); }
+			else { client.get("/probe", Probe.class); }
+		}).isInstanceOfSatisfying(CatedraTimeoutException.class, CatedraRestClientTest::assertSafe);
 	}
 
 	@Test
@@ -277,6 +283,120 @@ class CatedraRestClientTest {
 		var error = new CatedraHttpException(org.springframework.http.HttpStatus.UNAUTHORIZED, problem.code());
 		assertThat(problem.toString()).doesNotContain(TEST_JWT);
 		assertSafe(error);
+	}
+
+	@Test
+	void paginatedGetPreservesArrayAndRepeatedHeadersWithTechnicalAuthentication() throws IOException {
+		var authorization = new AtomicReference<String>();
+		var method = new AtomicReference<String>();
+		var target = new AtomicReference<String>();
+		var client = start(exchange -> {
+			authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+			method.set(exchange.getRequestMethod()); target.set(exchange.getRequestURI().toString());
+			exchange.getResponseHeaders().add("X-Total-Count", "42");
+			exchange.getResponseHeaders().add("Link", "</probe?page=1>; rel=\"next\"");
+			exchange.getResponseHeaders().add("Link", "</probe?page=2>; rel=\"last\"");
+			exchange.getResponseHeaders().add("Authorization", "Bearer " + TEST_JWT);
+			respond(exchange, 200, "application/json; charset=UTF-8", "[{\"value\":\"one\"},{\"value\":\"two\"}]");
+		});
+		var response = client.getOkWithPagination("/probe?page=0&size=2", Probe[].class);
+		assertThat(response.body()).containsExactly(new Probe("one"), new Probe("two"));
+		assertThat(response.totalCountValues()).containsExactly("42");
+		assertThat(response.linkValues()).containsExactly("</probe?page=1>; rel=\"next\"", "</probe?page=2>; rel=\"last\"");
+		assertThat(method.get()).isEqualTo("GET"); assertThat(target.get()).isEqualTo("/probe?page=0&size=2");
+		assertThat(authorization.get()).isEqualTo("Bearer " + TEST_JWT);
+		assertThatThrownBy(() -> response.linkValues().add("another")).isInstanceOf(UnsupportedOperationException.class);
+	}
+
+	@Test
+	void paginationMetadataIsKeptRawForEndpointValidationAndLinksAreNeverFollowed() throws IOException {
+		var requests = new AtomicInteger();
+		var client = start(exchange -> {
+			requests.incrementAndGet(); exchange.getResponseHeaders().add("X-Total-Count", "not-numeric");
+			exchange.getResponseHeaders().add("X-Total-Count", "another-value");
+			exchange.getResponseHeaders().add("Link", "https://elsewhere.invalid/?private=" + PRIVATE_DETAIL + TEST_JWT);
+			respond(exchange, 200, "application/json", "[]");
+		});
+		var response = client.getOkWithPagination("/probe", Probe[].class);
+		assertThat(response.totalCountValues()).containsExactly("not-numeric", "another-value");
+		assertThat(response.linkValues()).hasSize(1);
+		assertThat(response.toString()).isEqualTo("CatedraPaginatedResponse[redacted]");
+		assertThat(requests.get()).isEqualTo(1);
+	}
+
+	@Test
+	void missingPaginationHeadersArePreservedAsEmptyValuesRatherThanInventedDefaults() throws IOException {
+		var client = start(exchange -> respond(exchange, 200, "application/json", "[]"));
+		var response = client.getOkWithPagination("/probe", Probe[].class);
+		assertThat(response.body()).isEmpty();
+		assertThat(response.totalCountValues()).isEmpty(); assertThat(response.linkValues()).isEmpty();
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = {201, 202, 204, 206, 207})
+	void paginatedGetRequiresExactly200(int status) throws IOException {
+		var client = start(exchange -> respond(exchange, status, "application/json", status == 204 ? "" : "[]"));
+		assertThatThrownBy(() -> client.getOkWithPagination("/probe", Probe[].class))
+				.isInstanceOfSatisfying(CatedraProtocolException.class, CatedraRestClientTest::assertSafe);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"", "text/plain", "application/problem+json", "invalid-media-type"})
+	void paginatedGetRequiresAValidJsonContentType(String type) throws IOException {
+		var client = start(exchange -> respond(exchange, 200, type.isEmpty() ? null : type, "[]"));
+		assertThatThrownBy(() -> client.getOkWithPagination("/probe", Probe[].class))
+				.isInstanceOfSatisfying(CatedraProtocolException.class, CatedraRestClientTest::assertSafe);
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"", "null", "{invalid", "{\"value\":\"not-an-array\"}"})
+	void paginatedGetRejectsMissingOrUnreadableBodiesWithoutRetainingDiagnostics(String body) throws IOException {
+		var client = start(exchange -> respond(exchange, 200, "application/json", body));
+		assertThatThrownBy(() -> client.getOkWithPagination("/probe", Probe[].class))
+				.isInstanceOfSatisfying(CatedraProtocolException.class, CatedraRestClientTest::assertSafe);
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = {400, 401, 403, 404, 409, 500, 503})
+	void paginatedGetReusesStatusAndCodeTranslationWithoutRetrying(int status) throws IOException {
+		var requests = new AtomicInteger();
+		var client = start(exchange -> {
+			requests.incrementAndGet(); respond(exchange, status, "application/problem+json",
+					"{\"status\":200,\"code\":\"INVALID_DATE_RANGE\",\"detail\":\"" + PRIVATE_DETAIL + TEST_JWT + "\"}");
+		});
+		assertThatThrownBy(() -> client.getOkWithPagination("/probe", Probe[].class))
+				.isInstanceOfSatisfying(CatedraHttpException.class, failure -> {
+					assertThat(failure.status().value()).isEqualTo(status);
+					assertThat(failure.code()).isEqualTo("INVALID_DATE_RANGE"); assertSafe(failure);
+				});
+		assertThat(requests.get()).isEqualTo(1);
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = {401, 403})
+	void paginatedGetPreservesSecurityErrorsWithoutAFunctionalCode(int status) throws IOException {
+		var client = start(exchange -> respond(exchange, status, "application/problem+json", "{\"detail\":\"" + PRIVATE_DETAIL + TEST_JWT + "\"}"));
+		assertThatThrownBy(() -> client.getOkWithPagination("/probe", Probe[].class))
+				.isInstanceOfSatisfying(CatedraHttpException.class, failure -> {
+					assertThat(failure.status().value()).isEqualTo(status); assertThat(failure.code()).isNull(); assertSafe(failure);
+				});
+	}
+
+	@Test
+	void paginatedGetCannotRepresentABodilessSuccess() throws IOException {
+		var client = start(exchange -> respond(exchange, 200, "application/json", "[]"));
+		assertThatThrownBy(() -> client.getOkWithPagination("/probe", Void.class)).isInstanceOf(CatedraProtocolException.class);
+	}
+
+	@Test
+	void paginationResponseCopiesMetadataAndRedactsItsBody() {
+		var counts = new ArrayList<>(List.of("1"));
+		var links = new ArrayList<>(List.of(PRIVATE_DETAIL));
+		var result = new ar.edu.um.prog2.appointmentreservation.integration.catedra.infrastructure.rest.dto.CatedraPaginatedResponse<>(
+				new Probe(TEST_JWT), counts, links);
+		counts.clear(); links.clear();
+		assertThat(result.totalCountValues()).containsExactly("1"); assertThat(result.linkValues()).containsExactly(PRIVATE_DETAIL);
+		assertThat(result.toString()).doesNotContain(TEST_JWT, PRIVATE_DETAIL);
 	}
 
 	private CatedraRestClient start(HttpHandler handler) throws IOException {
