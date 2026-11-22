@@ -10,9 +10,11 @@ public enum ReservationProcessStatus {
 	WAITING_FOR_CONFIRMATION,
 	CONFIRMED,
 	EXPIRED,
-	INVALID;
+	INVALID,
+	CANCELLED,
+	FAILED;
 
 	public boolean isTerminal() {
-		return this == CONFIRMED || this == EXPIRED || this == INVALID;
+		return this == CONFIRMED || this == EXPIRED || this == INVALID || this == CANCELLED || this == FAILED;
 	}
 }

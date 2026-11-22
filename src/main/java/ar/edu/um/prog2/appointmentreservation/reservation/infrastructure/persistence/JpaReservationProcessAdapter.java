@@ -1,6 +1,13 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.stream.Collectors;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationReconciliation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationPage;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.PhoneSubmissionJpaRepository;
 import java.util.Set;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
 
@@ -36,17 +43,60 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.re
 public final class JpaReservationProcessAdapter implements ReservationProcessStore {
 
 	private final UserJpaRepository users;
+	private final PhoneSubmissionJpaRepository submissions;
 	private final ReservationProcessJpaRepository processes;
 	private final TransactionTemplate transactions;
 	private final TransactionTemplate reads;
 
 	public JpaReservationProcessAdapter(UserJpaRepository users, ReservationProcessJpaRepository processes,
-			PlatformTransactionManager transactionManager) {
+			PhoneSubmissionJpaRepository submissions, PlatformTransactionManager transactionManager) {
 		this.users = Objects.requireNonNull(users);
+		this.submissions = Objects.requireNonNull(submissions);
 		this.processes = Objects.requireNonNull(processes);
 		this.transactions = new TransactionTemplate(Objects.requireNonNull(transactionManager));
 		this.reads = new TransactionTemplate(transactionManager);
 		this.reads.setReadOnly(true);
+	}
+
+	@Override
+	public List<ReservationReconciliation> reconcileReservations(AuthenticatedReservationUser owner,
+			List<OwnedReservationPage.Item> observations, Instant queryStartedAt) {
+		Objects.requireNonNull(owner, "Authenticated owner is required");
+		Objects.requireNonNull(queryStartedAt, "Remote query start time is required");
+		var batch = List.copyOf(observations);
+		if (batch.size() > 1000 || batch.stream().map(OwnedReservationPage.Item::localProcessId).distinct().count() != batch.size()) {
+			throw new IllegalArgumentException("A bounded batch of distinct local processes is required");
+		}
+		if (batch.isEmpty()) { return List.of(); }
+		try {
+			return transactions.execute(transaction -> reconcileBatch(owner, batch, queryStartedAt));
+		} catch (OwnedReservationQueryException failure) { throw failure; }
+		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
+	}
+
+	private List<ReservationReconciliation> reconcileBatch(AuthenticatedReservationUser owner,
+			List<OwnedReservationPage.Item> batch, Instant queryStartedAt) {
+		var ids = batch.stream().map(OwnedReservationPage.Item::localProcessId).collect(Collectors.toSet());
+		var processIds = batch.stream().map(item -> item.reservation().reservationProcessId()).collect(Collectors.toSet());
+		var reservationIds = batch.stream().map(item -> item.reservation().reservationId()).collect(Collectors.toSet());
+		if (processes.findReservationAssociations(processIds, reservationIds).stream().anyMatch(row -> !ids.contains(row.localProcessId()))) {
+			throw new OwnedReservationQueryException(OwnedReservationQueryException.Reason.CONFLICTING_ASSOCIATION);
+		}
+		Instant verifiedAt = Instant.now();
+		if (queryStartedAt.isAfter(verifiedAt)) { throw new IllegalArgumentException("Remote query must precede local verification"); }
+		var result = new ArrayList<ReservationReconciliation>();
+		for (var item : batch.stream().sorted(Comparator.comparingLong(OwnedReservationPage.Item::localProcessId)).toList()) {
+			var process = processes.findOwnedForUpdate(item.localProcessId(), owner.userId()).orElseThrow(() ->
+					new OwnedReservationQueryException(OwnedReservationQueryException.Reason.CONFLICTING_ASSOCIATION));
+			process.reconcileRest(item.reservation(), queryStartedAt, verifiedAt, owner.login());
+			if (process.getStatus().isTerminal() && process.getCurrentPhoneSubmissionEventId() != null) {
+				submissions.findForUpdate(process.getCurrentPhoneSubmissionEventId()).orElseThrow().close(verifiedAt);
+			}
+			result.add(new ReservationReconciliation(process.getId(), process.getStatus(), process.getRestVerifiedAt()));
+		}
+		processes.flush();
+		submissions.flush();
+		return List.copyOf(result);
 	}
 
 	@Override

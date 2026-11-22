@@ -497,3 +497,21 @@ lease to the existing phone intent. Claims commit before waiting for Kafka. An e
 lease permits recovery with the same event ID and payload; completion is fenced by
 the claim token. Exhaustion preserves the pending intent and does not imply remote
 failure. Existing publication and reservation states are unchanged.
+
+
+## V9 — Conciliación de reservas mediante REST
+
+Agrega `rest_observed_status` y `rest_verified_at` a `reservation_process`, sin
+crear otra entidad de reservas ni copiar nombres o teléfonos del listado técnico.
+La fecha registra la verificación local, no una fecha de modificación remota.
+Los estados `CANCELLED` y `FAILED` son terminales; `FAILED` no inventa una causa
+de expiración o invalidez. Una cancelación correlacionada puede avanzar `CONFIRMED`.
+
+Una confirmación REST puede persistirse sin `request_event_id`: el listado no lo
+proporciona y no se sintetizan eventos. Los estados de envío de teléfono mantienen
+sus requisitos de solicitud e intención durable. Los IDs externos siguen siendo
+únicos y el propietario no cambia. La operación revalida el lote bajo bloqueos
+locales en orden de ID, rechaza escrituras posteriores al inicio del GET, cierra
+intenciones de teléfono al llegar a un resultado terminal y confirma todo junto.
+Una contradicción revierte el lote completo. Una ausencia no cambia ningún estado.
+En este incremento el listado todavía no invoca automáticamente esta operación.

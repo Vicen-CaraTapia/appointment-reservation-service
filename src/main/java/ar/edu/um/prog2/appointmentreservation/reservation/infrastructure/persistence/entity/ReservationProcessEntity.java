@@ -5,6 +5,11 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.RestReservationTransitions;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.RestReservationTransitions.Observation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException.Reason;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -86,6 +91,13 @@ public class ReservationProcessEntity {
 
 	@Column(name = "external_reservation_id")
 	private Long externalReservationId;
+
+	@Enumerated(EnumType.STRING)
+	@Column(name = "rest_observed_status", length = 20)
+	private Observation restObservedStatus;
+
+	@Column(name = "rest_verified_at")
+	private Instant restVerifiedAt;
 
 	@Column(name = "outcome_reason", columnDefinition = "text")
 	private String outcomeReason;
@@ -193,6 +205,38 @@ public class ReservationProcessEntity {
 		this.lastModifiedDate = Instant.now();
 		this.status = ReservationProcessStatus.WAITING_FOR_PHONE;
 	}
+
+	/** Caller holds the owner's process lock; no caller-supplied names or event IDs are copied. */
+	public void reconcileRest(TechnicalReservation row, Instant queryStartedAt, Instant verifiedAt, String actor) {
+		if (!Objects.equals(externalReservationProcessId, row.reservationProcessId())
+				|| !externalPatientId.equals(row.externalPatientId())
+				|| (externalReservationId != null && externalReservationId.longValue() != row.reservationId())
+				|| professionalId != row.professionalId() || !appointmentDate.equals(row.appointmentDate())
+				|| !startTime.equals(row.startTime()) || row.reservationId() <= 0) {
+			throw new OwnedReservationQueryException(Reason.CONFLICTING_ASSOCIATION);
+		}
+		Instant changedAt = lastModifiedDate == null ? createdDate : lastModifiedDate;
+		if ((changedAt != null && changedAt.isAfter(queryStartedAt))
+				|| (restVerifiedAt != null && !restVerifiedAt.isBefore(queryStartedAt))) {
+			throw new OwnedReservationQueryException(Reason.CONCURRENT_CHANGE);
+		}
+		var observed = Observation.valueOf(row.status().name());
+		var decision = RestReservationTransitions.decide(status, observed);
+		if (decision.outcome() == Outcome.CONFLICT) { throw new OwnedReservationQueryException(Reason.CONFLICTING_STATE); }
+		String checkedActor = auditActor(actor);
+		if (decision.outcome() == Outcome.APPLY) {
+			status = decision.nextStatus();
+			outcomeReason = null;
+		}
+		externalReservationId = row.reservationId();
+		restObservedStatus = observed;
+		restVerifiedAt = verifiedAt.truncatedTo(ChronoUnit.MICROS);
+		lastModifiedBy = checkedActor;
+		lastModifiedDate = restVerifiedAt;
+	}
+
+	public Observation getRestObservedStatus() { return restObservedStatus; }
+	public Instant getRestVerifiedAt() { return restVerifiedAt; }
 
 	/** Storage guards for validated evidence; the adapter commits this effect with its inbox receipt. */
 	public Decision applyAsynchronousEvidence(ReservationActionEvent event) {

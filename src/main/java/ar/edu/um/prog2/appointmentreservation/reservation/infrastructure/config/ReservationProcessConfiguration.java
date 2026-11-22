@@ -86,8 +86,8 @@ public class ReservationProcessConfiguration {
 
 	@Bean
 	public ReservationProcessStore reservationProcessStore(UserJpaRepository users,
-			ReservationProcessJpaRepository processes, PlatformTransactionManager transactions) {
-		return new JpaReservationProcessAdapter(users, processes, transactions);
+			ReservationProcessJpaRepository processes, PhoneSubmissionJpaRepository submissions, PlatformTransactionManager transactions) {
+		return new JpaReservationProcessAdapter(users, processes, submissions, transactions);
 	}
 
 	@Bean

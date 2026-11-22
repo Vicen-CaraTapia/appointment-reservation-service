@@ -53,7 +53,7 @@ class JpaReservationProcessAdapterTest {
 	private final ReservationProcessJpaRepository processes = mock(ReservationProcessJpaRepository.class);
 	private final PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
 	private final SimpleTransactionStatus transaction = new SimpleTransactionStatus();
-	private final JpaReservationProcessAdapter adapter = new JpaReservationProcessAdapter(users, processes, manager);
+	private final JpaReservationProcessAdapter adapter = new JpaReservationProcessAdapter(users, processes, mock(ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.PhoneSubmissionJpaRepository.class), manager);
 
 	@Test
 	void savesACompleteHeldProcessAndReturnsOnlyAfterTheLocalCommit() {
