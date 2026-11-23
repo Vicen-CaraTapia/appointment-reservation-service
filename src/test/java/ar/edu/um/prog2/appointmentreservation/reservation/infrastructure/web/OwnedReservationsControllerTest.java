@@ -10,6 +10,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -137,6 +138,65 @@ class OwnedReservationsControllerTest {
 		mvc.perform(get("/api/reservations").header(HttpHeaders.AUTHORIZATION, "Bearer " + token(42)))
 				.andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("RESERVATION_STATE_CONFLICT"))
 				.andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"));
+	}
+
+	@ParameterizedTest
+	@CsvSource({
+		"INVALID_DATE_RANGE,400,INVALID_RESERVATION_DATE_RANGE",
+		"TIMEOUT,503,RESERVATION_LIST_UNAVAILABLE",
+		"UNAVAILABLE,503,RESERVATION_LIST_UNAVAILABLE",
+		"INVALID_RESPONSE,502,INVALID_CATEDRA_RESERVATION_RESPONSE",
+		"INTEGRATION_NOT_FOUND,502,CATEDRA_RESERVATION_LIST_REJECTED",
+		"UNAUTHORIZED,502,CATEDRA_RESERVATION_LIST_REJECTED",
+		"FORBIDDEN,502,CATEDRA_RESERVATION_LIST_REJECTED",
+		"NOT_FOUND,502,CATEDRA_RESERVATION_LIST_REJECTED",
+		"CONFLICT,502,CATEDRA_RESERVATION_LIST_REJECTED",
+		"REQUEST_REJECTED,502,CATEDRA_RESERVATION_LIST_REJECTED"
+	})
+	void externalFailuresUseStablePublicStatusAndCode(ReservationListingException.Reason reason,
+			int httpStatus, String code) throws Exception {
+		when(reservations.list(any())).thenThrow(new ReservationListingException(reason));
+		assertSafeProblem(httpStatus, code);
+	}
+
+	@ParameterizedTest
+	@CsvSource({
+		"INVALID_RESPONSE,502,INVALID_CATEDRA_RESERVATION_RESPONSE",
+		"INCOMPLETE_RESULT,503,RESERVATION_LIST_INCOMPLETE",
+		"CONCURRENT_CHANGE,503,RESERVATION_STATE_CHANGED",
+		"CONFLICTING_ASSOCIATION,409,RESERVATION_STATE_CONFLICT",
+		"CONFLICTING_STATE,409,RESERVATION_STATE_CONFLICT"
+	})
+	void consistencyFailuresUseStablePublicStatusAndCode(OwnedReservationQueryException.Reason reason,
+			int httpStatus, String code) throws Exception {
+		when(reservations.list(any())).thenThrow(new OwnedReservationQueryException(reason));
+		assertSafeProblem(httpStatus, code);
+	}
+
+	@Test
+	void absentApplicationIdentityStillRequiresBearerAuthentication() throws Exception {
+		when(reservations.list(any())).thenThrow(
+				new ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationAuthenticationRequiredException());
+		assertSafeProblem(401, "UNAUTHORIZED");
+		mvc.perform(get("/api/reservations").header(HttpHeaders.AUTHORIZATION, "Bearer " + token(42)))
+				.andExpect(header().string(HttpHeaders.WWW_AUTHENTICATE, "Bearer"));
+	}
+
+	@Test
+	void unexpectedFailureDoesNotExposeInternalDiagnostics() throws Exception {
+		when(reservations.list(any())).thenThrow(new IllegalStateException("private diagnostic user-42 secret-value"));
+		assertSafeProblem(503, "RESERVATION_LIST_UNAVAILABLE");
+	}
+
+	private void assertSafeProblem(int httpStatus, String code) throws Exception {
+		var result = mvc.perform(get("/api/reservations").header(HttpHeaders.AUTHORIZATION, "Bearer " + token(42)))
+				.andExpect(status().is(httpStatus))
+				.andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+				.andExpect(jsonPath("$.status").value(httpStatus))
+				.andExpect(jsonPath("$.code").value(code))
+				.andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store")).andReturn();
+		assertThat(result.getResponse().getContentAsString())
+				.doesNotContain(SECRET, "private diagnostic", "user-42", "secret-value");
 	}
 
 	private static String token(long userId) {
