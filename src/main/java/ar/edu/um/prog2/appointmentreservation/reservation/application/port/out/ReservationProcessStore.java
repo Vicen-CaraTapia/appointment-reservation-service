@@ -20,6 +20,9 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Conf
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PreparedReservationCancellation;
 
 public interface ReservationProcessStore {
+	/** Records correlated cancellation evidence under the owner's row lock. */
+	StoredReservationProcess recordCancellation(long id, AuthenticatedReservationUser owner,
+			ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation result);
 
 	/** Commits a single owned claim under a row lock. Replays preserve the original intent. */
 	PreparedReservationCancellation prepareCancellation(

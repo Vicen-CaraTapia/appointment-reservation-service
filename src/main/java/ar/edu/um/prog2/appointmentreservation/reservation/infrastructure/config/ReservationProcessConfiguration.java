@@ -37,6 +37,15 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.T
 public class ReservationProcessConfiguration {
 
 	@Bean
+	public ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.CancelOwnedReservationUseCase cancelOwnedReservationUseCase(
+			CurrentReservationUser users, ReservationProcessStore processes,
+			ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationCanceller remote,
+			ListOwnedReservationsUseCase listing) {
+		return new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.CancelOwnedReservationUseCase(
+				users, processes, remote, listing, Clock.systemUTC());
+	}
+
+	@Bean
 	public PrepareReservationCancellationUseCase prepareReservationCancellationUseCase(
 			CurrentReservationUser currentUser, ReservationProcessStore processes) {
 		return new PrepareReservationCancellationUseCase(

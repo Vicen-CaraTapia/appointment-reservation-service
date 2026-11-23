@@ -1157,6 +1157,15 @@ class ReservationProcessPersistenceIT {
 		assertThat(replay.reason()).isEqualTo(first.reason());
 		assertThat(replay.requestedAt()).isEqualTo(loaded.getCancellationRequestedAt());
 		assertThat(processes.findById(held.id()).orElseThrow().getVersion()).isEqualTo(loaded.getVersion());
+		var evidence = new ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation(
+				8251, first.externalProcessId(), Instant.now());
+		var cancelled = store().recordCancellation(held.id(), identity(owner), evidence);
+		assertThat(cancelled.status()).isEqualTo(ReservationProcessStatus.CANCELLED);
+		var verified = processes.findById(held.id()).orElseThrow();
+		assertThat(verified.getRestObservedStatus().name()).isEqualTo("CANCELLED");
+		assertThat(verified.getCancellationReason()).isEqualTo(first.reason());
+		assertThat(store().recordCancellation(held.id(), identity(owner), evidence).version()).isEqualTo(cancelled.version());
+		assertThat(processes.findById(held.id()).orElseThrow().getRestVerifiedAt()).isEqualTo(verified.getRestVerifiedAt());
 	}
 
 	@Test

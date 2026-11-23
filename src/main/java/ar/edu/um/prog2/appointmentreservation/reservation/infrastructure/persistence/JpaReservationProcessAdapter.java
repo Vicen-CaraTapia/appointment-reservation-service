@@ -157,6 +157,36 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 	}
 
 	@Override
+	public StoredReservationProcess recordCancellation(long id, AuthenticatedReservationUser owner,
+			ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation result) {
+		requireIdentity(id, owner);
+		Objects.requireNonNull(result, "Cancellation evidence is required");
+		try {
+			return reconciliations.execute(transaction -> {
+				var process = processes.findOwnedForUpdate(id, owner.userId())
+						.orElseThrow(() -> new ReservationProcessStateException(Reason.NOT_FOUND));
+				if (!Objects.equals(process.getExternalReservationProcessId(), result.reservationProcessId())
+						|| !Objects.equals(process.getExternalReservationId(), result.reservationId())
+						|| result.cancelledAt() == null
+						|| (process.getStatus() != ReservationProcessStatus.CANCELLATION_PENDING
+								&& process.getStatus() != ReservationProcessStatus.CANCELLED)) {
+					throw new ReservationProcessStateException(Reason.CONFLICT);
+				}
+				if (process.getStatus() != ReservationProcessStatus.CANCELLED) {
+					process.markCancelled(result.reservationId(), Instant.now(), null, owner.login());
+					if (process.getCurrentPhoneSubmissionEventId() != null) {
+						submissions.findForUpdate(process.getCurrentPhoneSubmissionEventId()).orElseThrow().close(Instant.now());
+					}
+					processes.flush();
+					submissions.flush();
+				}
+				return observation(process);
+			});
+		} catch (ReservationProcessStateException failure) { throw failure; }
+		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
+	}
+
+	@Override
 	public Optional<StoredReservationProgress> findOwnedProgress(long id, AuthenticatedReservationUser owner) {
 		requireIdentity(id, owner);
 		try {
