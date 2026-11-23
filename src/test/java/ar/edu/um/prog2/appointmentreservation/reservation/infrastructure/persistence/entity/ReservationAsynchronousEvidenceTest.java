@@ -105,6 +105,46 @@ class ReservationAsynchronousEvidenceTest {
 	}
 
 	@Test
+	void aCancellationIsDeferredUntilTheReservationIdIsKnown() {
+		var process = waiting();
+		var event = new ReservationActionEvent("cancel", Signal.RESERVATION_CANCELLED, "process", "hold", "request", TIME,
+				null, 8251L, SELECTION, null);
+		assertThat(process.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.DEFER);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+	}
+
+	@Test
+	void cancellationCanBeAppliedAfterConfirmationOrFromRestReconciledIdentity() {
+		var event = new ReservationActionEvent("cancel", Signal.RESERVATION_CANCELLED, "process", "hold", "request", TIME,
+				null, 8251L, SELECTION, "No longer needed");
+		var confirmed = waiting();
+		confirmed.applyAsynchronousEvidence(result("confirmed", Signal.RESERVATION_CONFIRMED, "request", 8251L, SELECTION, null));
+		assertThat(confirmed.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.APPLY);
+		assertThat(confirmed.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+		assertThat(confirmed.getCancellationReason()).isEqualTo("No longer needed");
+		assertThat(confirmed.getRestVerifiedAt()).isNull();
+
+		var reconciled = waiting();
+		ReflectionTestUtils.setField(reconciled, "requestEventId", null);
+		ReflectionTestUtils.setField(reconciled, "externalReservationId", 8251L);
+		ReflectionTestUtils.setField(reconciled, "status", ReservationProcessStatus.CONFIRMED);
+		assertThat(reconciled.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.CONFLICT);
+		ReflectionTestUtils.setField(reconciled, "restVerifiedAt", TIME);
+		assertThat(reconciled.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.APPLY);
+		assertThat(reconciled.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+	}
+
+	@Test
+	void aCancellationCannotReplaceATerminalProcessWithoutReservationEvidence() {
+		var process = waiting();
+		process.applyAsynchronousEvidence(result("expired", Signal.PROCESS_EXPIRED, "request", null, null, "HOLD_EXPIRED"));
+		var cancellation = new ReservationActionEvent("cancel", Signal.RESERVATION_CANCELLED, "process", "hold", "request", TIME,
+				null, 8251L, SELECTION, null);
+		assertThat(process.applyAsynchronousEvidence(cancellation).outcome()).isEqualTo(Outcome.CONFLICT);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.EXPIRED);
+	}
+
+	@Test
 	void rejectionIsCorrectableButUnknownReasonsAreRetainedAsConflicts() {
 		var process = waiting();
 		ReflectionTestUtils.setField(process, "status", ReservationProcessStatus.PHONE_SUBMISSION_PENDING);

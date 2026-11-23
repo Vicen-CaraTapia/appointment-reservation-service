@@ -105,6 +105,12 @@ class ReservationProcessCancellationControllerTest {
         when(remote.cancel(anyString(),isNull())).thenThrow(new ReservationCancellationException(ReservationCancellationException.Reason.UNAUTHORIZED));
         failure(send(PATH,"{}",42),502,"CATEDRA_UNAUTHORIZED");
     }
+    @Test void aNonCancelledLocalResultIsNeverReportedAsSuccess() throws Exception {
+        when(store.recordCancellation(eq(9L),eq(OWNER),any())).thenReturn(new StoredReservationProcess(9,3,
+                ReservationProcessStatus.CANCELLATION_PENDING,new StartReservationCommand(202,LocalDate.of(2030,1,2),LocalTime.NOON),
+                "user-42",new AppointmentHold("private-hold","private-process",NOW.plusSeconds(60)),null,null));
+        failure(send(PATH,"{}",42),503,"CANCELLATION_OUTCOME_UNKNOWN");
+    }
     @ParameterizedTest
     @CsvSource({"RESERVATION_OWNER_MISMATCH,502,CATEDRA_OWNER_MISMATCH", "RESERVATION_NOT_FOUND,502,CATEDRA_RESERVATION_NOT_FOUND",
             "RESERVATION_NOT_CANCELLABLE,409,RESERVATION_NOT_CANCELLABLE", "FORBIDDEN,502,CATEDRA_FORBIDDEN"})

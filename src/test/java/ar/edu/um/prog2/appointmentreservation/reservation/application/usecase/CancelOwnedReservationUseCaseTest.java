@@ -28,6 +28,20 @@ class CancelOwnedReservationUseCaseTest {
         when(store.prepareCancellation(123, owner, null, now)).thenReturn(new PreparedReservationCancellation(
                 123, 8251, "trusted-process", ReservationProcessStatus.CANCELLATION_PENDING, null, now, fresh));
     }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("invalidCancellationInputs")
+    void rejectsInvalidIdOrReasonBeforePreparingTheProcess(long id, String reason) {
+        when(users.requireAuthenticated()).thenReturn(owner);
+        assertThatThrownBy(() -> useCase.cancel(id, reason)).isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(store, remote, listing);
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> invalidCancellationInputs() {
+        return java.util.stream.Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of(0L, null),
+                org.junit.jupiter.params.provider.Arguments.of(123L, "x".repeat(501)));
+    }
     private StoredReservationProcess observation(ReservationProcessStatus status) {
         return new StoredReservationProcess(123, 3, status,
                 new StartReservationCommand(202, LocalDate.of(2026,12,1), LocalTime.NOON), "user-42",
@@ -100,6 +114,14 @@ class CancelOwnedReservationUseCaseTest {
         assertThatThrownBy(() -> useCase.cancel(123,null)).isInstanceOfSatisfying(ReservationCancellationException.class,
                 error -> assertThat(error.reason()).isEqualTo(ReservationCancellationException.Reason.OUTCOME_UNKNOWN))
                 .hasNoCause().hasMessageNotContaining("private transport diagnostic");
+        verifyNoInteractions(remote);
+    }
+
+    @Test void missingOwnedProcessDuringReconciliationRemainsUnknown() {
+        prepare(false);
+        when(store.findOwned(123,owner)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> useCase.cancel(123,null)).isInstanceOfSatisfying(ReservationCancellationException.class,
+                error -> assertThat(error.reason()).isEqualTo(ReservationCancellationException.Reason.OUTCOME_UNKNOWN));
         verifyNoInteractions(remote);
     }
 

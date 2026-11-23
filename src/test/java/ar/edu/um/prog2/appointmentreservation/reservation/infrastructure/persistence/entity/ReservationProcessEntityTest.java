@@ -13,7 +13,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import ar.edu.um.prog2.appointmentreservation.reservation.application.ExternalPatientId;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservation;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
+import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.RestReservationTransitions.Observation;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.entity.UserEntity;
 import ar.edu.um.prog2.appointmentreservation.user.infrastructure.security.FinalUserSecurityConfiguration;
 
@@ -229,6 +231,44 @@ class ReservationProcessEntityTest {
 		assertThatThrownBy(() -> process.releaseConfirmation("actor")).isInstanceOf(IllegalStateException.class);
 	}
 
+	@Test
+	void claimsAndRecordsCancellationWithoutLosingTheOriginalReasonOnReplay() {
+		var process = confirmed();
+		var requestedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS).plusSeconds(10);
+		process.claimCancellation("User requested", requestedAt, "alice");
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
+		assertThat(process.getCancellationReason()).isEqualTo("User requested");
+		assertThat(process.getCancellationRequestedAt()).isEqualTo(requestedAt);
+
+		var cancelledAt = requestedAt.plusSeconds(1);
+		process.markCancelled(8251, cancelledAt, null, "catedra-adapter");
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+		assertThat(process.getCancellationReason()).isEqualTo("User requested");
+		assertThat(process.getRestObservedStatus()).isEqualTo(Observation.CANCELLED);
+		assertThat(process.getRestVerifiedAt()).isEqualTo(cancelledAt);
+
+		process.claimCancellation("replacement", cancelledAt.plusSeconds(1), "alice");
+		process.markCancelled(8251, cancelledAt.plusSeconds(2), "Remote reason", "catedra-adapter");
+		assertThat(process.getCancellationReason()).isEqualTo("Remote reason");
+	}
+
+	@Test
+	void rejectsCancellationEvidenceThatDoesNotMatchTheConfirmedReservation() {
+		var held = held();
+		assertThatThrownBy(() -> held.claimCancellation(null, Instant.now(), "alice"))
+				.isInstanceOf(IllegalStateException.class);
+		var process = confirmed();
+		assertThatThrownBy(() -> process.markCancelled(0, Instant.now(), null, "alice"))
+				.isInstanceOf(IllegalStateException.class);
+		assertThatThrownBy(() -> process.markCancelled(8252, Instant.now(), null, "alice"))
+				.isInstanceOf(IllegalStateException.class);
+		assertThatThrownBy(() -> process.markCancelled(8251, null, null, "alice"))
+				.isInstanceOf(NullPointerException.class);
+		assertThatThrownBy(() -> process.claimCancellation("reason", Instant.now(), " "))
+				.isInstanceOf(IllegalArgumentException.class);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+	}
+
 	@ParameterizedTest
 	@MethodSource("invalidClaimDetails")
 	void validatesAllClaimInputsBeforeChangingTheHeldProcess(String first, String last, String actor) {
@@ -248,6 +288,17 @@ class ReservationProcessEntityTest {
 	private static ReservationProcessEntity claimed(String first, String last) {
 		var process = held();
 		process.claimConfirmation(first, last, "claim-actor");
+		return process;
+	}
+
+	private static ReservationProcessEntity confirmed() {
+		var process = claimed("Ana", "Perez");
+		process.markWaitingForPhone("Ana", "Perez", Instant.now().plusSeconds(300), "confirmation-adapter");
+		var queryStartedAt = Instant.now().plusSeconds(1);
+		process.reconcileRest(new TechnicalReservation(8251, "process-first", "user-42", DATE, TIME,
+				TIME.plusMinutes(30), 201, "Professional", "Test", "Ana", "Perez", null,
+				TechnicalReservation.Status.CONFIRMED, Instant.now(), Instant.now(), null, null),
+				queryStartedAt, queryStartedAt.plusMillis(1), "rest-reconciliation");
 		return process;
 	}
 

@@ -130,6 +130,8 @@ class AsynchronousReservationTransitionsTest {
 				.isEqualTo(new Decision(Outcome.APPLY, CANCELLED));
 		assertThat(decide(CANCELLATION_PENDING, Signal.RESERVATION_CANCELLED))
 				.isEqualTo(new Decision(Outcome.APPLY, CANCELLED));
+		assertThat(decide(WAITING_FOR_PHONE, Signal.RESERVATION_CANCELLED))
+				.isEqualTo(new Decision(Outcome.CONFLICT, WAITING_FOR_PHONE));
 	}
 
 	static Stream<Arguments> terminalStatesAndAllSignals() {

@@ -82,8 +82,7 @@ public final class AsynchronousReservationTransitions {
 					|| current == ReservationProcessStatus.WAITING_FOR_CONFIRMATION
 					? apply(ReservationProcessStatus.WAITING_FOR_PHONE) : keep(Outcome.CONFLICT, current);
 			case RESERVATION_CONFIRMED -> apply(ReservationProcessStatus.CONFIRMED);
-			case RESERVATION_CANCELLED -> current == ReservationProcessStatus.CANCELLATION_PENDING
-						? apply(ReservationProcessStatus.CANCELLED) : keep(Outcome.CONFLICT, current);
+			case RESERVATION_CANCELLED -> keep(Outcome.CONFLICT, current);
 			case PROCESS_EXPIRED -> apply(ReservationProcessStatus.EXPIRED);
 			case PROCESS_INVALID -> apply(ReservationProcessStatus.INVALID);
 		};

@@ -217,6 +217,20 @@ class CatedraAppointmentActionDecoderTest {
 		assertInvalid(input.toString(),Reason.INVALID_PAYLOAD);
 	}
 
+	@ParameterizedTest @ValueSource(strings={"42","true","{}"})
+	void cancellationRejectsNonTextualReasons(String reason) {
+		var input = valid(CONFIRMED).put("eventType","AppointmentCancelled").put("status","CANCELLED");
+		input.set("reason",JSON.readTree(reason));
+		assertInvalid(input.toString(),Reason.INVALID_PAYLOAD);
+	}
+
+	@Test
+	void cancellationRejectsReasonsLongerThanTheLocalContract() {
+		var input = valid(CONFIRMED).put("eventType","AppointmentCancelled").put("status","CANCELLED")
+				.put("reason","x".repeat(501));
+		assertInvalid(input.toString(),Reason.INVALID_PAYLOAD);
+	}
+
 	private static Stream<String> types() { return TYPES.stream(); }
 
 	private static Stream<Arguments> requiredFields() {
