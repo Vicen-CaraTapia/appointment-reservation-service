@@ -127,7 +127,7 @@ class CatedraAppointmentActionDecoderTest {
 	}
 
 	@ParameterizedTest
-	@ValueSource(strings = {"AdditionalInformationSubmitted", "CatalogUpdated", "AppointmentCancelled", "UnknownEvent"})
+	@ValueSource(strings = {"AdditionalInformationSubmitted", "CatalogUpdated", "UnknownEvent"})
 	void distinguishesUnsupportedEventTypes(String type) {
 		assertInvalid(valid(REQUEST).put("eventType", type).toString(), Reason.UNSUPPORTED_EVENT);
 	}
@@ -195,6 +195,40 @@ class CatedraAppointmentActionDecoderTest {
 		assertThatThrownBy(() -> decoder.decode("process-opaque", payload))
 				.isInstanceOfSatisfying(InvalidCatedraActionException.class, error -> assertThat(error.reason()).isEqualTo(reason))
 				.hasNoCause();
+	}
+
+	@ParameterizedTest @ValueSource(booleans={true,false})
+	void cancellationPreservesNullableReasonAndFullCorrelation(boolean nullReason) {
+		var input = valid(CONFIRMED).put("eventType","AppointmentCancelled").put("status","CANCELLED");
+		if (nullReason) { input.putNull("reason"); } else { input.put("reason","Private cancellation text"); }
+		var result = decoder.decode("process-opaque",input.toString());
+		assertThat(result.signal()).isEqualTo(Signal.RESERVATION_CANCELLED);
+		assertThat(result.confirmedSelection().professionalId()).isEqualTo(202);
+		assertThat(result.externalReservationId()).isEqualTo(Long.MAX_VALUE);
+		assertThat(result.reason()).isEqualTo(nullReason ? null : "Private cancellation text");
+		input.putObject("futureField").put("value",true);
+		assertThat(decoder.decode("process-opaque",input.toString())).isEqualTo(result);
+	}
+
+	@ParameterizedTest @ValueSource(strings={"reservationId","professionalId","date","startTime","requestEventId","holdId","status","reason"})
+	void cancellationRequiresContractualFields(String field) {
+		var input = valid(CONFIRMED).put("eventType","AppointmentCancelled").put("status","CANCELLED").putNull("reason");
+		input.remove(field);
+		assertInvalid(input.toString(),Reason.INVALID_PAYLOAD);
+	}
+
+	@ParameterizedTest @ValueSource(strings={"42","true","{}"})
+	void cancellationRejectsNonTextualReasons(String reason) {
+		var input = valid(CONFIRMED).put("eventType","AppointmentCancelled").put("status","CANCELLED");
+		input.set("reason",JSON.readTree(reason));
+		assertInvalid(input.toString(),Reason.INVALID_PAYLOAD);
+	}
+
+	@Test
+	void cancellationRejectsReasonsLongerThanTheLocalContract() {
+		var input = valid(CONFIRMED).put("eventType","AppointmentCancelled").put("status","CANCELLED")
+				.put("reason","x".repeat(501));
+		assertInvalid(input.toString(),Reason.INVALID_PAYLOAD);
 	}
 
 	private static Stream<String> types() { return TYPES.stream(); }

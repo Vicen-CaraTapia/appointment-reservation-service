@@ -1,5 +1,9 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationPage;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -167,7 +171,7 @@ class ReservationEventPersistenceIT {
 	@Test
 	void asynchronousMigrationsPreserveOwnershipSelectionExpiryAndAuditOfTheExistingV4Row() {
 		assertThat(context.getBean(Flyway.class).info().applied()).extracting(m -> m.getVersion().toString())
-				.containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
+				.containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
 		assertThat(context.getBean(Flyway.class).migrate().migrationsExecuted).isZero();
 		var process = process();
 		assertThat(process.getOwner().getId()).isEqualTo(ownerId);
@@ -255,7 +259,7 @@ class ReservationEventPersistenceIT {
 		}
 		var other = new AuthenticatedReservationUser(otherId, "bob");
 		var held = store.createHeld(other, SELECTION,
-				new ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold("bob-hold", "bob-process", EXPIRY));
+				new AppointmentHold("bob-hold", "bob-process", EXPIRY));
 		store.claimInitialConfirmation(held.id(), 0, other, new ConfirmationPatient("Bob", "Patient"), TIME);
 		events.receive(new ReservationActionEvent("bob-request", Signal.PHONE_REQUESTED, "bob-process", "bob-hold", null,
 				TIME, EXPIRY, null, null, null));
@@ -315,7 +319,7 @@ class ReservationEventPersistenceIT {
 		events.receive(event);
 		assertThat(events.applyPending(event.eventId()).state()).isEqualTo(State.PENDING);
 		var held = store.createHeld(owner(), SELECTION,
-				new ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold("other-hold", "other-process", EXPIRY));
+				new AppointmentHold("other-hold", "other-process", EXPIRY));
 		store.claimInitialConfirmation(held.id(), 0, owner(), new ConfirmationPatient("Ana", "Perez"), TIME);
 		assertThat(events.applyPending(event.eventId()).localProcessId()).isEqualTo(held.id());
 		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.HELD);
@@ -628,7 +632,7 @@ class ReservationEventPersistenceIT {
 	void databaseRequiresCurrentPointerToBelongToTheSameProcessAndOnlyOneActiveIntent() throws Exception {
 		applyRequest(); prepare("phone", "00000001234");
 		var other = store.createHeld(owner(), SELECTION,
-				new ar.edu.um.prog2.appointmentreservation.reservation.application.model.AppointmentHold("other-hold", "other-process", EXPIRY));
+				new AppointmentHold("other-hold", "other-process", EXPIRY));
 		assertThatThrownBy(() -> execute("UPDATE " + schema + ".reservation_process SET current_phone_submission_event_id='phone' WHERE id=" + other.id()))
 				.isInstanceOfSatisfying(SQLException.class, error -> assertThat(error.getSQLState()).isEqualTo("23503"));
 		assertThatThrownBy(() -> execute("INSERT INTO " + schema + ".reservation_phone_submission"
@@ -992,6 +996,117 @@ class ReservationEventPersistenceIT {
 		assertThat(store.findOwnedProgress(id, owner()).orElseThrow().status()).isEqualTo(ReservationProcessStatus.CONFIRMED);
 	}
 
+	@Test
+	void restTerminalEvidenceClosesPendingPhoneIntentInTheSameTransaction() {
+		applyRequest(); prepare("phone-rest", "00000001234");
+		store.reconcileReservations(owner(),List.of(restObservation("CONFIRMED")),Instant.now());
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+		assertThat(process().getExternalReservationId()).isEqualTo(8251L);
+		assertThat(phones.findOwned(id,owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.CLOSED);
+		assertThat(phones.findPending(TIME,10)).isEmpty();
+		events.receive(rejection());
+		assertThat(events.applyPending("rejected").state()).isEqualTo(State.CONFLICT);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+	}
+
+	@Test
+	void failedRestCommitRollsBackProcessEvidenceAndPhoneClosureTogether() throws Exception {
+		applyRequest(); prepare("phone-rest-rollback","00000001234");
+		long version=process().getVersion();
+		execute("CREATE FUNCTION "+schema+".reject_rest_closure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+"RAISE EXCEPTION USING MESSAGE='test-only-private-rest-diagnostic',ERRCODE='23514'; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER reject_rest_closure AFTER UPDATE ON "+schema
+				+".reservation_phone_submission DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "+schema+".reject_rest_closure()");
+		assertThatThrownBy(() -> store.reconcileReservations(owner(),List.of(restObservation("CONFIRMED")),Instant.now()))
+				.isInstanceOf(ar.edu.um.prog2.appointmentreservation.reservation.application.exception.ReservationProcessStateException.class)
+				.hasNoCause().hasMessageNotContaining("test-only-private-rest-diagnostic");
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.PHONE_SUBMISSION_PENDING);
+		assertThat(process().getExternalReservationId()).isNull(); assertThat(process().getRestVerifiedAt()).isNull();
+		assertThat(process().getVersion()).isEqualTo(version);
+		assertThat(phones.findOwned(id,owner()).orElseThrow().state()).isEqualTo(PhoneSubmissionIntent.State.PENDING);
+	}
+
+	@Test
+	void genericRestFailurePreservesAnAlreadyKnownExpiryReason() {
+		applyRequest();
+		events.receive(new ReservationActionEvent("expired-rest",Signal.PROCESS_EXPIRED,"process","hold","request",TIME,null,null,null,"HOLD_EXPIRED"));
+		assertThat(events.applyPending("expired-rest").state()).isEqualTo(State.APPLIED);
+		store.reconcileReservations(owner(),List.of(restObservation("FAILED")),Instant.now());
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.EXPIRED);
+		assertThat(process().getOutcomeReason()).isEqualTo("HOLD_EXPIRED");
+		assertThat(process().getRestObservedStatus().name()).isEqualTo("FAILED");
+	}
+
+	@Test
+	void eventCommitWinsAgainstAnInFlightRestVerificationWaitingForTheProcessLock() throws Exception {
+		applyRequest();
+		events.receive(confirmed("concurrent-final",8251,"request"));
+		Instant started=Instant.now();
+		var locked=new java.util.concurrent.CountDownLatch(1);
+		var release=new java.util.concurrent.CountDownLatch(1);
+		var attempted=new java.util.concurrent.CountDownLatch(1);
+		try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+			try {
+				var event=executor.submit(() -> {
+					var transaction=new org.springframework.transaction.support.TransactionTemplate(
+							context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+					return transaction.execute(status -> {
+						var receipt=events.applyPending("concurrent-final");
+						locked.countDown();
+						try { if(!release.await(10,java.util.concurrent.TimeUnit.SECONDS)) { throw new IllegalStateException("Test release timed out"); } }
+						catch(InterruptedException error) { Thread.currentThread().interrupt(); throw new IllegalStateException("Test interrupted"); }
+						return receipt;
+					});
+				});
+				assertThat(locked.await(10,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+				var rest=executor.submit(() -> {
+					attempted.countDown();
+					return store.reconcileReservations(owner(),List.of(restObservation("PHONE_PENDING")),started);
+				});
+				assertThat(attempted.await(10,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+				assertThatThrownBy(() -> rest.get(200,java.util.concurrent.TimeUnit.MILLISECONDS)).isInstanceOf(java.util.concurrent.TimeoutException.class);
+				release.countDown();
+				assertThat(event.get(10,java.util.concurrent.TimeUnit.SECONDS).state()).isEqualTo(State.APPLIED);
+				assertThatThrownBy(() -> rest.get(10,java.util.concurrent.TimeUnit.SECONDS))
+						.isInstanceOf(java.util.concurrent.ExecutionException.class)
+						.hasCauseInstanceOf(ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException.class);
+				assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+				assertThat(process().getExternalReservationId()).isEqualTo(8251L);
+				assertThat(process().getRestVerifiedAt()).isNull();
+			} finally { release.countDown(); }
+		}
+	}
+
+	@Test
+	void ownedQueryRejectsAnEventCommittedDuringTheGetWithoutOverwritingOrRepeatingIt() {
+		applyRequest();
+		var calls=new java.util.concurrent.atomic.AtomicInteger();
+		ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.TechnicalReservationSource remote=query -> {
+			assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+			calls.incrementAndGet();
+			events.receive(confirmed("during-get",8251,"request"));
+			assertThat(events.applyPending("during-get").state()).isEqualTo(State.APPLIED);
+			return new ar.edu.um.prog2.appointmentreservation.reservation.application.model.TechnicalReservationPage(
+					List.of(restObservation("PHONE_PENDING").reservation()),1);
+		};
+		var useCase=new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ListOwnedReservationsUseCase(
+				this::owner,remote,store,java.time.Clock.systemUTC());
+		assertThatThrownBy(() -> useCase.list(new ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationQuery(null,null,null,0,20)))
+				.isInstanceOfSatisfying(ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException.class,
+						error -> assertThat(error.reason().name()).isEqualTo("CONCURRENT_CHANGE"));
+		assertThat(calls).hasValue(1);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+		assertThat(process().getRestVerifiedAt()).isNull();
+		assertThat(events.receive(confirmed("during-get",8251,"request")).state()).isEqualTo(State.APPLIED);
+	}
+
+	private OwnedReservationPage.Item restObservation(String status) {
+		var row=new TechnicalReservation(8251,"process","user-"+ownerId,
+				SELECTION.date(),SELECTION.startTime(),SELECTION.startTime().plusMinutes(30),SELECTION.professionalId(),
+				null,null,null,null,null,TechnicalReservation.Status.valueOf(status),TIME,null,null,null);
+		return new OwnedReservationPage.Item(id,row);
+	}
+
 	private PhoneSubmissionIntent prepare(String eventId, String phone) {
 		return phones.prepare(owner(), new NewPhoneSubmission(id, eventId, phone, "test-project"), TIME);
 	}
@@ -1006,8 +1121,64 @@ class ReservationEventPersistenceIT {
 	}
 
 	private void applyRequest() { claim(); events.receive(request()); assertThat(events.applyPending("request").state()).isEqualTo(State.APPLIED); }
-	private ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess claim() {
+
+	@ParameterizedTest @ValueSource(booleans={true,false})
+	void cancellationRestAndKafkaConvergeInEitherOrder(boolean restFirst) {
+		applyRequest(); events.receive(confirmed("confirmed",8251,"request")); events.applyPending("confirmed");
+		store.prepareCancellation(id,owner(),"Private reason",Instant.now());
+		var result = new ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation(8251,"process",TIME);
+		if(restFirst) { store.recordCancellation(id,owner(),result); }
+		var event = new ReservationActionEvent("cancelled",Signal.RESERVATION_CANCELLED,"process","hold","request",TIME,
+				null,8251L,SELECTION,null);
+		events.receive(event);
+		assertThat(events.applyPending(event.eventId()).state()).isEqualTo(restFirst?State.IGNORED:State.APPLIED);
+		if(!restFirst) { assertThat(process().getRestVerifiedAt()).isNull(); store.recordCancellation(id,owner(),result); }
+		var version = process().getVersion();
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+		events.receive(event); events.applyPending(event.eventId());
+		assertThat(process().getVersion()).isEqualTo(version);
+		events.receive(confirmed("late-confirmation",8251,"request"));
+		assertThat(events.applyPending("late-confirmation").state()).isEqualTo(State.CONFLICT);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+	}
+	private StoredReservationProcess claim() {
 		return store.claimInitialConfirmation(id, 0, owner(), new ConfirmationPatient("Ana", "Perez"), TIME);
+	}
+
+	@Test
+	void cancellationRestAndKafkaRaceUsesOneStateWithoutLostEvidence() throws Exception {
+		applyRequest(); events.receive(confirmed("confirmed",8251,"request")); events.applyPending("confirmed");
+		store.prepareCancellation(id,owner(),null,Instant.now());
+		var event = new ReservationActionEvent("cancel-race",Signal.RESERVATION_CANCELLED,"process","hold","request",TIME,
+				null,8251L,SELECTION,"Change requested");
+		events.receive(event);
+		var order = new java.util.concurrent.atomic.AtomicInteger();
+		concurrently(() -> {
+			if(order.getAndIncrement()==0) { events.applyPending("cancel-race"); }
+			else { store.recordCancellation(id,owner(),new ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation(8251,"process",TIME)); }
+			return true;
+		});
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+		assertThat(events.receive(event).state()).isIn(State.APPLIED,State.IGNORED);
+	}
+
+	@Test
+	void cancellationCommitFailureRollsBackReceiptAndEffectForRedelivery() throws Exception {
+		applyRequest(); events.receive(confirmed("confirmed",8251,"request")); events.applyPending("confirmed");
+		var event = new ReservationActionEvent("cancel-rollback",Signal.RESERVATION_CANCELLED,"process","hold","request",TIME,
+				null,8251L,SELECTION,null);
+		events.receive(event);
+		execute("CREATE FUNCTION " + schema + ".reject_cancel_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+				+ "IF NEW.handling_status = 'APPLIED' THEN RAISE EXCEPTION USING MESSAGE = 'test-only-cancel-failure', "
+				+ "ERRCODE = '23514'; END IF; RETURN NEW; END $$");
+		execute("CREATE CONSTRAINT TRIGGER reject_cancel_commit AFTER UPDATE ON " + schema
+				+ ".reservation_event_inbox DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION " + schema + ".reject_cancel_commit()");
+		assertThatThrownBy(() -> events.applyPending("cancel-rollback")).isInstanceOf(ReservationEventStorageException.class).hasNoCause();
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+		assertThat(events.findPending("process",10)).contains("cancel-rollback");
+		execute("DROP TRIGGER reject_cancel_commit ON " + schema + ".reservation_event_inbox");
+		assertThat(events.applyPending("cancel-rollback").state()).isEqualTo(State.APPLIED);
+		assertThat(process().getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
 	}
 	private ReservationActionEvent request() {
 		return new ReservationActionEvent("request", Signal.PHONE_REQUESTED, "process", "hold", null, TIME, EXPIRY, null, null, null);

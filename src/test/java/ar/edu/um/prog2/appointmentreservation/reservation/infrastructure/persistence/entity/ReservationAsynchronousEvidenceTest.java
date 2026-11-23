@@ -90,6 +90,60 @@ class ReservationAsynchronousEvidenceTest {
 		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
 	}
 
+	@ParameterizedTest @ValueSource(strings={"process","hold","request","reservation","professional","date","time"})
+	void cancellationRejectsContradictoryCorrelation(String mismatch) {
+		var process = waiting();
+		process.applyAsynchronousEvidence(result("confirmed",Signal.RESERVATION_CONFIRMED,"request",8251L,SELECTION,null));
+		var selected = new StartReservationCommand(mismatch.equals("professional")?203:202,
+				mismatch.equals("date")?SELECTION.date().plusDays(1):SELECTION.date(),
+				mismatch.equals("time")?SELECTION.startTime().plusMinutes(30):SELECTION.startTime());
+		var event = new ReservationActionEvent("cancel",Signal.RESERVATION_CANCELLED,
+				mismatch.equals("process")?"other":"process",mismatch.equals("hold")?"other":"hold",
+				mismatch.equals("request")?"other":"request",TIME,null,mismatch.equals("reservation")?8252L:8251L,selected,null);
+		assertThat(process.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.CONFLICT);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+	}
+
+	@Test
+	void aCancellationIsDeferredUntilTheReservationIdIsKnown() {
+		var process = waiting();
+		var event = new ReservationActionEvent("cancel", Signal.RESERVATION_CANCELLED, "process", "hold", "request", TIME,
+				null, 8251L, SELECTION, null);
+		assertThat(process.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.DEFER);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.WAITING_FOR_PHONE);
+	}
+
+	@Test
+	void cancellationCanBeAppliedAfterConfirmationOrFromRestReconciledIdentity() {
+		var event = new ReservationActionEvent("cancel", Signal.RESERVATION_CANCELLED, "process", "hold", "request", TIME,
+				null, 8251L, SELECTION, "No longer needed");
+		var confirmed = waiting();
+		confirmed.applyAsynchronousEvidence(result("confirmed", Signal.RESERVATION_CONFIRMED, "request", 8251L, SELECTION, null));
+		assertThat(confirmed.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.APPLY);
+		assertThat(confirmed.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+		assertThat(confirmed.getCancellationReason()).isEqualTo("No longer needed");
+		assertThat(confirmed.getRestVerifiedAt()).isNull();
+
+		var reconciled = waiting();
+		ReflectionTestUtils.setField(reconciled, "requestEventId", null);
+		ReflectionTestUtils.setField(reconciled, "externalReservationId", 8251L);
+		ReflectionTestUtils.setField(reconciled, "status", ReservationProcessStatus.CONFIRMED);
+		assertThat(reconciled.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.CONFLICT);
+		ReflectionTestUtils.setField(reconciled, "restVerifiedAt", TIME);
+		assertThat(reconciled.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.APPLY);
+		assertThat(reconciled.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLED);
+	}
+
+	@Test
+	void aCancellationCannotReplaceATerminalProcessWithoutReservationEvidence() {
+		var process = waiting();
+		process.applyAsynchronousEvidence(result("expired", Signal.PROCESS_EXPIRED, "request", null, null, "HOLD_EXPIRED"));
+		var cancellation = new ReservationActionEvent("cancel", Signal.RESERVATION_CANCELLED, "process", "hold", "request", TIME,
+				null, 8251L, SELECTION, null);
+		assertThat(process.applyAsynchronousEvidence(cancellation).outcome()).isEqualTo(Outcome.CONFLICT);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.EXPIRED);
+	}
+
 	@Test
 	void rejectionIsCorrectableButUnknownReasonsAreRetainedAsConflicts() {
 		var process = waiting();

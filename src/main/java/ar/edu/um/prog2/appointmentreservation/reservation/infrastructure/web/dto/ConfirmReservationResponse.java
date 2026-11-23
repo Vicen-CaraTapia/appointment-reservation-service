@@ -20,7 +20,7 @@ public record ConfirmReservationResponse(long id, ReservationProcessStatus statu
 	private static boolean afterConfirmationStarted(ReservationProcessStatus status) {
 		return switch (status) {
 			case CONFIRMATION_PENDING, WAITING_FOR_PHONE, PHONE_SUBMISSION_PENDING,
-					WAITING_FOR_CONFIRMATION, CONFIRMED, EXPIRED, INVALID -> true;
+					WAITING_FOR_CONFIRMATION, CANCELLATION_PENDING, CONFIRMED, EXPIRED, INVALID, CANCELLED, FAILED -> true;
 			case PENDING_HOLD, HELD -> false;
 		};
 	}

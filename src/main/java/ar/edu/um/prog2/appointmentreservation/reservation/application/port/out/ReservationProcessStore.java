@@ -1,5 +1,11 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.application.port.out;
 
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationPage;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationReconciliation;
+import java.util.List;
+import java.util.Set;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
+
 import java.util.Optional;
 import java.time.Instant;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
@@ -11,8 +17,32 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Star
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PreparedReservationCancellation;
 
 public interface ReservationProcessStore {
+	/** Records correlated cancellation evidence under the owner's row lock. */
+	StoredReservationProcess recordCancellation(long id, AuthenticatedReservationUser owner,
+			ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation result);
+
+	/** Commits a single owned claim under a row lock. Replays preserve the original intent. */
+	PreparedReservationCancellation prepareCancellation(
+			long id, AuthenticatedReservationUser owner, String reason, Instant now);
+
+	/**
+	 * Revalidates the complete authorized batch under local locks and commits all effects atomically.
+	 * queryStartedAt precedes remote I/O. Newer local writes or contradictory evidence reject the batch.
+	 * No remote calls, synthetic event IDs or changes inferred from missing rows are permitted.
+	 */
+	List<ReservationReconciliation> reconcileReservations(
+			AuthenticatedReservationUser owner,
+			List<OwnedReservationPage.Item> observations,
+			Instant queryStartedAt);
+
+
+	/** Bounded local identity lookup by either external ID, including contradictions across owners; no state mutation. */
+	List<ReservationAssociation>
+			findReservationAssociations(Set<String> processIds, Set<Long> reservationIds);
+
 
 	/**
 	 * Atomically saves a local HELD process owned by the authenticated user, preserving

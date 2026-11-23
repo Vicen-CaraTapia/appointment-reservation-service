@@ -1,5 +1,16 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.stream.Collectors;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationReconciliation;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.OwnedReservationPage;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.exception.OwnedReservationQueryException;
+import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.PhoneSubmissionJpaRepository;
+import java.util.Set;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
+
 import java.time.Instant;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProgress;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationEventReceipt;
@@ -23,6 +34,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Star
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PreparedReservationCancellation;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
@@ -32,17 +44,77 @@ import ar.edu.um.prog2.appointmentreservation.user.infrastructure.persistence.re
 public final class JpaReservationProcessAdapter implements ReservationProcessStore {
 
 	private final UserJpaRepository users;
+	private final PhoneSubmissionJpaRepository submissions;
 	private final ReservationProcessJpaRepository processes;
 	private final TransactionTemplate transactions;
 	private final TransactionTemplate reads;
+	private final TransactionTemplate reconciliations;
 
 	public JpaReservationProcessAdapter(UserJpaRepository users, ReservationProcessJpaRepository processes,
-			PlatformTransactionManager transactionManager) {
+			PhoneSubmissionJpaRepository submissions, PlatformTransactionManager transactionManager) {
 		this.users = Objects.requireNonNull(users);
+		this.submissions = Objects.requireNonNull(submissions);
 		this.processes = Objects.requireNonNull(processes);
 		this.transactions = new TransactionTemplate(Objects.requireNonNull(transactionManager));
+		this.reconciliations = new TransactionTemplate(transactionManager);
+		this.reconciliations.setTimeout(10);
 		this.reads = new TransactionTemplate(transactionManager);
 		this.reads.setReadOnly(true);
+	}
+
+	@Override
+	public List<ReservationReconciliation> reconcileReservations(AuthenticatedReservationUser owner,
+			List<OwnedReservationPage.Item> observations, Instant queryStartedAt) {
+		Objects.requireNonNull(owner, "Authenticated owner is required");
+		Objects.requireNonNull(queryStartedAt, "Remote query start time is required");
+		var batch = List.copyOf(observations);
+		if (batch.size() > 1000 || batch.stream().map(OwnedReservationPage.Item::localProcessId).distinct().count() != batch.size()) {
+			throw new IllegalArgumentException("A bounded batch of distinct local processes is required");
+		}
+		if (batch.isEmpty()) { return List.of(); }
+		try {
+			return reconciliations.execute(transaction -> reconcileBatch(owner, batch, queryStartedAt));
+		} catch (OwnedReservationQueryException failure) { throw failure; }
+		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
+	}
+
+	private List<ReservationReconciliation> reconcileBatch(AuthenticatedReservationUser owner,
+			List<OwnedReservationPage.Item> batch, Instant queryStartedAt) {
+		var ids = batch.stream().map(OwnedReservationPage.Item::localProcessId).collect(Collectors.toSet());
+		var processIds = batch.stream().map(item -> item.reservation().reservationProcessId()).collect(Collectors.toSet());
+		var reservationIds = batch.stream().map(item -> item.reservation().reservationId()).collect(Collectors.toSet());
+		if (processes.findReservationAssociations(processIds, reservationIds).stream().anyMatch(row -> !ids.contains(row.localProcessId()))) {
+			throw new OwnedReservationQueryException(OwnedReservationQueryException.Reason.CONFLICTING_ASSOCIATION);
+		}
+		Instant verifiedAt = Instant.now();
+		if (queryStartedAt.isAfter(verifiedAt)) { throw new IllegalArgumentException("Remote query must precede local verification"); }
+		var result = new ArrayList<ReservationReconciliation>();
+		for (var item : batch.stream().sorted(Comparator.comparingLong(OwnedReservationPage.Item::localProcessId)).toList()) {
+			var process = processes.findOwnedForUpdate(item.localProcessId(), owner.userId()).orElseThrow(() ->
+					new OwnedReservationQueryException(OwnedReservationQueryException.Reason.CONFLICTING_ASSOCIATION));
+			process.reconcileRest(item.reservation(), queryStartedAt, verifiedAt, owner.login());
+			if (process.getStatus().isTerminal() && process.getCurrentPhoneSubmissionEventId() != null) {
+				submissions.findForUpdate(process.getCurrentPhoneSubmissionEventId()).orElseThrow().close(verifiedAt);
+			}
+			result.add(new ReservationReconciliation(process.getId(), process.getStatus(), process.getRestVerifiedAt()));
+		}
+		processes.flush();
+		submissions.flush();
+		return List.copyOf(result);
+	}
+
+	@Override
+	public List<ReservationAssociation>
+			findReservationAssociations(Set<String> processIds, Set<Long> reservationIds) {
+		Objects.requireNonNull(processIds, "Process identifiers are required");
+		Objects.requireNonNull(reservationIds, "Reservation identifiers are required");
+		if (processIds.size() > 1000 || reservationIds.size() > 1000) {
+			throw new IllegalArgumentException("Reservation association lookup exceeds the bounded query size");
+		}
+		if (processIds.isEmpty() && reservationIds.isEmpty()) { return List.of(); }
+		try {
+			return reads.execute(transaction -> List.copyOf(processes.findReservationAssociations(processIds, reservationIds)));
+		} catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
 	}
 
 	@Override
@@ -54,6 +126,64 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 		} catch (RuntimeException failure) {
 			throw new ReservationProcessStateException(Reason.STORAGE_FAILURE);
 		}
+	}
+
+	@Override
+	public PreparedReservationCancellation prepareCancellation(
+			long id, AuthenticatedReservationUser owner, String reason, Instant now) {
+		requireIdentity(id, owner);
+		Objects.requireNonNull(now, "Cancellation request time is required");
+		if (reason != null && reason.length() > 500) {
+			throw new IllegalArgumentException("Cancellation reason must not exceed 500 characters");
+		}
+		try {
+			return reconciliations.execute(transaction -> {
+				var process = processes.findOwnedForUpdate(id, owner.userId())
+						.orElseThrow(() -> new ReservationProcessStateException(Reason.NOT_FOUND));
+				var status = process.getStatus();
+				if ((status != ReservationProcessStatus.CONFIRMED && status != ReservationProcessStatus.CANCELLED
+						&& status != ReservationProcessStatus.CANCELLATION_PENDING)
+						|| process.getExternalReservationId() == null || process.getExternalReservationProcessId() == null) {
+					throw new ReservationProcessStateException(Reason.CONFLICT);
+				}
+				boolean claimed = status == ReservationProcessStatus.CONFIRMED;
+				if (claimed) { process.claimCancellation(reason, now, owner.login()); processes.flush(); }
+				return new PreparedReservationCancellation(
+						id, process.getExternalReservationId(), process.getExternalReservationProcessId(), process.getStatus(),
+						process.getCancellationReason(), process.getCancellationRequestedAt(), claimed);
+			});
+		} catch (ReservationProcessStateException failure) { throw failure; }
+		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
+	}
+
+	@Override
+	public StoredReservationProcess recordCancellation(long id, AuthenticatedReservationUser owner,
+			ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation result) {
+		requireIdentity(id, owner);
+		Objects.requireNonNull(result, "Cancellation evidence is required");
+		try {
+			return reconciliations.execute(transaction -> {
+				var process = processes.findOwnedForUpdate(id, owner.userId())
+						.orElseThrow(() -> new ReservationProcessStateException(Reason.NOT_FOUND));
+				if (!Objects.equals(process.getExternalReservationProcessId(), result.reservationProcessId())
+						|| !Objects.equals(process.getExternalReservationId(), result.reservationId())
+						|| result.cancelledAt() == null
+						|| (process.getStatus() != ReservationProcessStatus.CANCELLATION_PENDING
+								&& process.getStatus() != ReservationProcessStatus.CANCELLED)) {
+					throw new ReservationProcessStateException(Reason.CONFLICT);
+				}
+				if (process.getStatus() != ReservationProcessStatus.CANCELLED) {
+					process.markCancelled(result.reservationId(), Instant.now(), null, owner.login());
+					if (process.getCurrentPhoneSubmissionEventId() != null) {
+						submissions.findForUpdate(process.getCurrentPhoneSubmissionEventId()).orElseThrow().close(Instant.now());
+					}
+					processes.flush();
+					submissions.flush();
+				}
+				return observation(process);
+			});
+		} catch (ReservationProcessStateException failure) { throw failure; }
+		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
 	}
 
 	@Override

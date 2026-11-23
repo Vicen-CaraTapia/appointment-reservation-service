@@ -63,7 +63,7 @@ class FlywayMigrationIT {
 	void productionStartupAppliesTheUserAndProcessModelsWithoutReapplyingThem() throws SQLException {
 		try (var context = start("classpath:db/migration")) {
 			assertThat(context.getBean(Flyway.class).info().applied())
-					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
+					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
 			assertThat(query("SELECT count(*) FROM " + schema
 					+ ".flyway_schema_history WHERE version='1' AND success AND type='SQL'"))
 					.isEqualTo(1);
@@ -82,6 +82,27 @@ class FlywayMigrationIT {
 			assertThat(context.getBean(Flyway.class).migrate().migrationsExecuted).isZero();
 			assertThat(query("SELECT count(*) FROM " + schema + ".authority")).isEqualTo(1);
 		}
+	}
+
+	@Test
+	void v9UpgradesExistingV8ReservationsWithoutInventingRestEvidence() throws SQLException {
+		var before=Flyway.configure().dataSource(url,username,password).schemas(schema).defaultSchema(schema)
+				.createSchemas(false).locations("classpath:db/migration").target("8").load();
+		before.migrate();
+		long userId=insertUser("rest-upgrade","rest-upgrade@example.test","synthetic-hash");
+		try(var connection=connection();var statement=connection.createStatement()) {
+			statement.executeUpdate("INSERT INTO "+schema+".reservation_process (owner_user_id,professional_id,appointment_date,start_time,"
+					+"external_patient_id,created_by,process_status,hold_id,external_reservation_process_id,expires_at,"
+					+"patient_first_name,patient_last_name,request_event_id,external_reservation_id) VALUES ("+userId
+					+",202,DATE '2026-12-01',TIME '12:00','user-"+userId+"','test','CONFIRMED','hold-old','process-old',"
+					+"CURRENT_TIMESTAMP,'Test','Patient','request-old',8251)");
+		}
+		var upgraded=Flyway.configure().dataSource(url,username,password).schemas(schema).defaultSchema(schema)
+				.createSchemas(false).locations("classpath:db/migration").load();
+		assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(3);
+		assertThat(query("SELECT count(*) FROM "+schema+".reservation_process WHERE process_status='CONFIRMED' "
+				+"AND request_event_id='request-old' AND external_reservation_id=8251 AND rest_verified_at IS NULL AND rest_observed_status IS NULL")).isEqualTo(1);
+		assertThat(upgraded.migrate().migrationsExecuted).isZero();
 	}
 
 	@Test

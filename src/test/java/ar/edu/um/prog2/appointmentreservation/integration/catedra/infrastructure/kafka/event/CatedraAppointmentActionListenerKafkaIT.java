@@ -116,6 +116,46 @@ class CatedraAppointmentActionListenerKafkaIT {
 			container.start();
 			assertThat(redelivered.await(15, TimeUnit.SECONDS)).isTrue();
 			await(() -> committedOffset(admin) == 2);
+			String cancelled = """
+					{"schemaVersion":1,"eventId":"cancel-broker","eventType":"AppointmentCancelled",
+					"groupId":"test-project","reservationProcessId":"process-broker-4","holdId":"hold-broker-2",
+					"requestEventId":"request-broker-1","reservationId":8251,"professionalId":202,
+					"date":"2030-01-03","startTime":"18:00","status":"CANCELLED","reason":null,
+					"occurredAt":"2030-01-01T12:00:00Z"}
+					""";
+			org.mockito.Mockito.doThrow(new IllegalStateException("simulated cancellation storage failure"))
+					.when(actions).process(any());
+			kafka.send(TOPIC,"process-broker-4",cancelled).get(10,TimeUnit.SECONDS);
+			await(() -> !container.isRunning());
+			assertThat(committedOffset(admin)).isEqualTo(2);
+			org.mockito.Mockito.doAnswer(call -> {
+				ReservationActionEvent event = call.getArgument(0);
+				assertThat(event.signal()).isEqualTo(ar.edu.um.prog2.appointmentreservation.reservation.domain.model.AsynchronousReservationTransitions.Signal.RESERVATION_CANCELLED);
+				assertThat(event.reason()).isNull();
+				return new ReservationEventReceipt(event.eventId(),State.APPLIED,42L,false);
+			}).when(actions).process(any());
+			container.start();
+			await(() -> committedOffset(admin) == 3);
+			// Simulate business commit succeeding, then losing the acknowledgment.
+			var committedEffects = new java.util.concurrent.atomic.AtomicInteger();
+			var deliveries = new java.util.concurrent.atomic.AtomicInteger();
+			org.mockito.Mockito.doAnswer(call -> {
+				ReservationActionEvent event = call.getArgument(0);
+				if (deliveries.incrementAndGet() == 1) {
+					committedEffects.incrementAndGet();
+					throw new IllegalStateException("test-only failure after business commit");
+				}
+				return new ReservationEventReceipt(event.eventId(), State.APPLIED, 42L, true);
+			}).when(actions).process(any());
+			kafka.send(TOPIC, "process-broker-4", cancelled.replace("cancel-broker", "cancel-after-commit"))
+					.get(10, TimeUnit.SECONDS);
+			await(() -> !container.isRunning());
+			assertThat(committedOffset(admin)).isEqualTo(3);
+			assertThat(committedEffects).hasValue(1);
+			container.start();
+			await(() -> committedOffset(admin) == 4);
+			assertThat(deliveries).hasValue(2);
+			assertThat(committedEffects).hasValue(1);
 		}
 	}
 

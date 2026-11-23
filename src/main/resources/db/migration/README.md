@@ -497,3 +497,38 @@ lease to the existing phone intent. Claims commit before waiting for Kafka. An e
 lease permits recovery with the same event ID and payload; completion is fenced by
 the claim token. Exhaustion preserves the pending intent and does not imply remote
 failure. Existing publication and reservation states are unchanged.
+
+
+## V9 — Conciliación de reservas mediante REST
+
+Agrega `rest_observed_status` y `rest_verified_at` a `reservation_process`, sin
+crear otra entidad de reservas ni copiar nombres o teléfonos del listado técnico.
+La fecha registra la verificación local, no una fecha de modificación remota.
+Los estados `CANCELLED` y `FAILED` son terminales; `FAILED` no inventa una causa
+de expiración o invalidez. Una cancelación correlacionada puede avanzar `CONFIRMED`.
+
+Una confirmación REST puede persistirse sin `request_event_id`: el listado no lo
+proporciona y no se sintetizan eventos. Los estados de envío de teléfono mantienen
+sus requisitos de solicitud e intención durable. Los IDs externos siguen siendo
+únicos y el propietario no cambia. La operación revalida el lote bajo bloqueos
+locales en orden de ID, rechaza escrituras posteriores al inicio del GET, cierra
+intenciones de teléfono al llegar a un resultado terminal y confirma todo junto.
+Una contradicción revierte el lote completo. Una ausencia no cambia ningún estado.
+El listado obtiene primero todas las páginas y comprueba las asociaciones, concilia
+el lote autorizado completo y luego pagina la respuesta. Devuelve por separado el
+estado observado y el estado local verificado. El GET se ejecuta fuera de la
+transacción local; los fallos externos o resultados incompletos no disparan cambios.
+
+## V10 — Solicitud durable de cancelación
+
+Agrega `CANCELLATION_PENDING`, `cancellation_reason` y
+`cancellation_requested_at`. El estado se guarda antes de invocar el POST remoto,
+de modo que un timeout o una caída posterior al envío no se convierta en un falso
+fracaso. La confirmación correlacionada registra evidencia `CANCELLED`; la API y
+el consumidor Kafka se implementan en incrementos posteriores de A9.3.
+
+## V11 — Evidencia de cancelación Kafka
+
+Permite `CANCELLED` con el identificador de reserva y la solicitud correlacionada
+sin fabricar una observación REST. El recibo inbox, la transición, la auditoría y
+el cierre de intención se confirman en la transacción existente del consumidor.

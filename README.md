@@ -7,8 +7,9 @@
 # Appointment Reservation Service
 
 Backend de usuarios finales, turnos y reservas para el sistema distribuido de
-Programación 2. Ofrece registro, autenticación y consulta de disponibilidad de
-turnos. Las operaciones de reserva todavía no están disponibles.
+Programación 2. Ofrece registro, autenticación, consulta de disponibilidad,
+seguimiento de procesos, envío de información solicitada, consulta y cancelación
+de reservas propias.
 
 ## Requisitos
 
@@ -191,6 +192,40 @@ Ante un timeout HTTP o un resultado incierto, consultá primero el GET. Repetir 
 misma intención conserva el envío durable según A8.3; no envíes identificadores
 nuevos para forzar otra publicación. La recuperación respeta los límites configurados.
 
+
+### Consultar mis reservas
+
+`GET /api/reservations` requiere el JWT final-user. Acepta `reservationStatus`
+(`PHONE_PENDING`, `CONFIRMED`, `CANCELLED` o `FAILED`), `from` y `to` inclusivos
+(`YYYY-MM-DD`), `page` (0 por defecto) y `size` (20 por defecto, máximo 100).
+El orden es fecha y hora descendentes. `total` cuenta únicamente reservas
+asociadas al usuario autenticado; no se aceptan filtros de propietario.
+
+Cada elemento identifica el proceso mediante `id` local y distingue `processStatus`
+(estado local de Appointment) de `reservationStatus` (observación de cátedra). No
+incluye IDs externos, teléfono ni `externalPatientId`. Las respuestas usan
+`Cache-Control: no-store`.
+
+### Cancelar una reserva propia
+
+`POST /api/reservations/{id}/cancel` requiere el JWT final-user del
+propietario y el ID local del proceso. El body es opcional; si se envía, usá JSON:
+
+```json
+{"reason":"Cambio de planes"}
+```
+
+`reason` puede ser nulo o tener hasta 500 caracteres. No se aceptan campos de
+propietario ni identificadores técnicos. Una cancelación verificada responde
+`200` con `id` y `status: CANCELLED`. Un proceso ajeno o inexistente devuelve el
+mismo `404`; un estado no cancelable, `409`. Los errores de autenticación técnica
+de cátedra se reportan como errores de dependencia (`502`), separados del `401`
+del usuario final. Un `503 CANCELLATION_OUTCOME_UNKNOWN` conserva el intento
+durable: consultá el progreso antes de repetir. Una repetición pendiente intenta
+una conciliación acotada sin reenviar el POST remoto. Las respuestas usan `no-store`.
+El consumidor también aplica `AppointmentCancelled` correlacionado; la respuesta
+REST y el evento pueden llegar en cualquier orden. El recibo durable por `eventId`
+evita repetir efectos, y una confirmación anterior no reabre un proceso cancelado.
 
 ## Ejecutar localmente
 
@@ -536,6 +571,8 @@ reales a esos servicios.
 El perfil PostgreSQL incluye la confirmación por HTTP con registro/login reales,
 propiedad del proceso, doble clic, rechazos y fallo local después de aceptación
 remota. Usa un servidor de cátedra simulado localmente; no crea reservas reales.
+Incluye el listado propio y la cancelación por HTTP: aislamiento entre usuarios,
+paginación, respuesta remota incompleta y conciliación sin repetir el POST.
 También verifica inbox e intenciones durables de teléfono, con duplicados,
 reinicio y rollback. La prueba HTTP de teléfono recorre solicitud, consulta propia,
 envío, corrección y confirmación; también cubre resultados durante la publicación y

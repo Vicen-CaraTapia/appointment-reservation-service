@@ -1,5 +1,6 @@
 package ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence;
 
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationAssociation;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -52,7 +53,7 @@ class JpaReservationProcessAdapterTest {
 	private final ReservationProcessJpaRepository processes = mock(ReservationProcessJpaRepository.class);
 	private final PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
 	private final SimpleTransactionStatus transaction = new SimpleTransactionStatus();
-	private final JpaReservationProcessAdapter adapter = new JpaReservationProcessAdapter(users, processes, manager);
+	private final JpaReservationProcessAdapter adapter = new JpaReservationProcessAdapter(users, processes, mock(ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.PhoneSubmissionJpaRepository.class), manager);
 
 	@Test
 	void savesACompleteHeldProcessAndReturnsOnlyAfterTheLocalCommit() {
@@ -349,12 +350,110 @@ class JpaReservationProcessAdapterTest {
 				.hasNoCause().hasMessageNotContaining("private diagnostic");
 	}
 
+	@Test
+	void readsAssociationSnapshotsInAReadOnlyTransactionWithoutSavingEntities() {
+		preparePersistence();
+		var processIds = java.util.Set.of("process-opaque");
+		var reservationIds = java.util.Set.of(44L);
+		var association = new ReservationAssociation(
+				123,42,"user-42","process-opaque",44L,SELECTION.professionalId(),SELECTION.date(),SELECTION.startTime());
+		when(processes.findReservationAssociations(processIds,reservationIds)).thenReturn(java.util.List.of(association));
+		assertThat(adapter.findReservationAssociations(processIds,reservationIds)).containsExactly(association);
+		verify(manager).getTransaction(argThat(definition -> definition.isReadOnly()));
+		verify(manager).commit(transaction);
+		verify(processes,never()).saveAndFlush(any());
+	}
+
+	@Test
+	void associationLookupSanitizesDatabaseErrorsRatherThanReturningEmptyResults() {
+		preparePersistence();
+		when(processes.findReservationAssociations(any(),any())).thenThrow(new DataIntegrityViolationException("private SQL diagnostic"));
+		assertThatThrownBy(() -> adapter.findReservationAssociations(java.util.Set.of("process-opaque"),java.util.Set.of(44L)))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class, error -> assertThat(error.reason()).isEqualTo(Reason.STORAGE_FAILURE))
+				.hasNoCause().hasMessageNotContaining("private SQL diagnostic");
+		verify(manager).rollback(transaction);
+	}
+
+	@Test
+	void emptyOrOversizedAssociationQueriesDoNotReachTheDatabase() {
+		assertThat(adapter.findReservationAssociations(java.util.Set.of(),java.util.Set.of())).isEmpty();
+		var ids = java.util.stream.IntStream.range(0,1001).mapToObj(Integer::toString).collect(java.util.stream.Collectors.toSet());
+		assertThatThrownBy(() -> adapter.findReservationAssociations(ids,java.util.Set.of())).isInstanceOf(IllegalArgumentException.class);
+		verifyNoInteractions(processes,manager);
+	}
+
 	private void preparePersistence() {
 		when(manager.getTransaction(any())).thenReturn(transaction);
 		var user = new UserEntity("alice", "$argon2id$v=19$m=19456,t=2,p=1$testSalt$testHash",
 				null, null, "alice@example.test", null, "es", "alice");
 		ReflectionTestUtils.setField(user, "id", 42L);
 		when(users.getReferenceById(42L)).thenReturn(user);
+	}
+
+	@Test
+	void claimsCancellationAfterCheckingOwnershipAndCommitsBeforeReturning() {
+		preparePersistence();
+		var process = new ReservationProcessEntity(users.getReferenceById(42L), 202,
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		process.markHeld("hold", "trusted-process", HOLD.expiresAt(), "alice");
+		ReflectionTestUtils.setField(process, "status", ReservationProcessStatus.CONFIRMED);
+		ReflectionTestUtils.setField(process, "externalReservationId", 8251L);
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.of(process));
+		var now = Instant.now();
+		var first = adapter.prepareCancellation(123, OWNER, "private reason", now);
+		assertThat(first.newlyClaimed()).isTrue();
+		assertThat(first.externalProcessId()).isEqualTo("trusted-process");
+		assertThat(first.status()).isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
+		assertThat(first.toString()).doesNotContain("private reason");
+		var replay = adapter.prepareCancellation(123, OWNER, "changed reason", now.plusSeconds(1));
+		assertThat(replay.newlyClaimed()).isFalse();
+		assertThat(replay.reason()).isEqualTo("private reason");
+		assertThat(replay.requestedAt()).isEqualTo(now);
+		verify(processes).flush();
+	}
+
+	@Test
+	void foreignOrMissingCancellationCannotCreateAnIntent() {
+		preparePersistence();
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.empty());
+		assertThatThrownBy(() -> adapter.prepareCancellation(123, OWNER, null, Instant.now()))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(Reason.NOT_FOUND));
+		verify(processes, never()).flush();
+		verify(manager).rollback(transaction);
+	}
+
+	@ParameterizedTest
+	@org.junit.jupiter.params.provider.EnumSource(value = ReservationProcessStatus.class,
+			names = {"CONFIRMED", "CANCELLED", "CANCELLATION_PENDING"},
+			mode = org.junit.jupiter.params.provider.EnumSource.Mode.EXCLUDE)
+	void noncancelableStatesDoNotCreateAnIntent(ReservationProcessStatus status) {
+		preparePersistence();
+		var process = new ReservationProcessEntity(users.getReferenceById(42L), 202,
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		ReflectionTestUtils.setField(process, "status", status);
+		ReflectionTestUtils.setField(process, "externalReservationId", 8251L);
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.of(process));
+		assertThatThrownBy(() -> adapter.prepareCancellation(123, OWNER, null, Instant.now()))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(Reason.CONFLICT));
+		assertThat(process.getCancellationRequestedAt()).isNull();
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void failedCancellationClaimCommitIsNotReturnedAsSuccess() {
+		preparePersistence();
+		var process = new ReservationProcessEntity(users.getReferenceById(42L), 202,
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		process.markHeld("hold", "trusted-process", HOLD.expiresAt(), "alice");
+		ReflectionTestUtils.setField(process, "status", ReservationProcessStatus.CONFIRMED);
+		ReflectionTestUtils.setField(process, "externalReservationId", 8251L);
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.of(process));
+		doThrow(new TransactionSystemException("private diagnostic")).when(manager).commit(transaction);
+		assertThatThrownBy(() -> adapter.prepareCancellation(123, OWNER, null, Instant.now()))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(Reason.STORAGE_FAILURE)).hasNoCause();
 	}
 
 	private void assertStorageFailure() {
