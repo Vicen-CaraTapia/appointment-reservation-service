@@ -90,6 +90,20 @@ class ReservationAsynchronousEvidenceTest {
 		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
 	}
 
+	@ParameterizedTest @ValueSource(strings={"process","hold","request","reservation","professional","date","time"})
+	void cancellationRejectsContradictoryCorrelation(String mismatch) {
+		var process = waiting();
+		process.applyAsynchronousEvidence(result("confirmed",Signal.RESERVATION_CONFIRMED,"request",8251L,SELECTION,null));
+		var selected = new StartReservationCommand(mismatch.equals("professional")?203:202,
+				mismatch.equals("date")?SELECTION.date().plusDays(1):SELECTION.date(),
+				mismatch.equals("time")?SELECTION.startTime().plusMinutes(30):SELECTION.startTime());
+		var event = new ReservationActionEvent("cancel",Signal.RESERVATION_CANCELLED,
+				mismatch.equals("process")?"other":"process",mismatch.equals("hold")?"other":"hold",
+				mismatch.equals("request")?"other":"request",TIME,null,mismatch.equals("reservation")?8252L:8251L,selected,null);
+		assertThat(process.applyAsynchronousEvidence(event).outcome()).isEqualTo(Outcome.CONFLICT);
+		assertThat(process.getStatus()).isEqualTo(ReservationProcessStatus.CONFIRMED);
+	}
+
 	@Test
 	void rejectionIsCorrectableButUnknownReasonsAreRetainedAsConflicts() {
 		var process = waiting();

@@ -56,17 +56,18 @@ public final class CatedraAppointmentActionDecoder {
 				Instant.parse(text(envelope, "occurredAt")),
 				signal == Signal.PHONE_REQUESTED || signal == Signal.PHONE_REJECTED
 						? Instant.parse(text(envelope, "expiresAt")) : null,
-				signal == Signal.RESERVATION_CONFIRMED ? positiveId(envelope, "reservationId") : null,
-				signal == Signal.RESERVATION_CONFIRMED ? new StartReservationCommand(positiveId(envelope, "professionalId"),
+				signal == Signal.RESERVATION_CONFIRMED || signal == Signal.RESERVATION_CANCELLED ? positiveId(envelope, "reservationId") : null,
+				signal == Signal.RESERVATION_CONFIRMED || signal == Signal.RESERVATION_CANCELLED ? new StartReservationCommand(positiveId(envelope, "professionalId"),
 						LocalDate.parse(text(envelope, "date")), LocalTime.parse(text(envelope, "startTime"))) : null,
 				signal == Signal.PHONE_REJECTED || signal == Signal.PROCESS_EXPIRED || signal == Signal.PROCESS_INVALID
-						? text(envelope, "reason") : null);
+						? text(envelope, "reason") : signal == Signal.RESERVATION_CANCELLED ? nullableReason(envelope) : null);
 	}
 
 	private static Signal signal(String type) {
 		return switch (type) {
 			case "AdditionalInformationRequested" -> Signal.PHONE_REQUESTED;
 			case "AppointmentConfirmed" -> Signal.RESERVATION_CONFIRMED;
+			case "AppointmentCancelled" -> Signal.RESERVATION_CANCELLED;
 			case "AdditionalInformationRejected" -> Signal.PHONE_REJECTED;
 			case "AppointmentProcessExpired" -> Signal.PROCESS_EXPIRED;
 			case "AppointmentProcessInvalid" -> Signal.PROCESS_INVALID;
@@ -75,6 +76,9 @@ public final class CatedraAppointmentActionDecoder {
 	}
 
 	private static void validateSpecificFields(JsonNode envelope, Signal signal) {
+		if (signal == Signal.RESERVATION_CANCELLED && !"CANCELLED".equals(text(envelope, "status"))) {
+			throw invalid(Reason.INVALID_PAYLOAD);
+		}
 		if (signal == Signal.PHONE_REQUESTED && !"PHONE_NUMBER".equals(text(envelope, "requiredField"))) {
 			throw invalid(Reason.INVALID_PAYLOAD);
 		}
@@ -91,6 +95,14 @@ public final class CatedraAppointmentActionDecoder {
 	private static String text(JsonNode envelope, String field) {
 		var value = envelope.get(field);
 		if (value == null || !value.isTextual() || value.asString().isBlank()) { throw invalid(Reason.INVALID_PAYLOAD); }
+		return value.asString();
+	}
+
+	private static String nullableReason(JsonNode envelope) {
+		var value = envelope.get("reason");
+		if (value == null) { throw invalid(Reason.INVALID_PAYLOAD); }
+		if (value.isNull()) { return null; }
+		if (!value.isTextual() || value.asString().length() > 500) { throw invalid(Reason.INVALID_PAYLOAD); }
 		return value.asString();
 	}
 

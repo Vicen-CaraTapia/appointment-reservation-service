@@ -63,7 +63,7 @@ class FlywayMigrationIT {
 	void productionStartupAppliesTheUserAndProcessModelsWithoutReapplyingThem() throws SQLException {
 		try (var context = start("classpath:db/migration")) {
 			assertThat(context.getBean(Flyway.class).info().applied())
-					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
+					.extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
 			assertThat(query("SELECT count(*) FROM " + schema
 					+ ".flyway_schema_history WHERE version='1' AND success AND type='SQL'"))
 					.isEqualTo(1);
@@ -99,7 +99,7 @@ class FlywayMigrationIT {
 		}
 		var upgraded=Flyway.configure().dataSource(url,username,password).schemas(schema).defaultSchema(schema)
 				.createSchemas(false).locations("classpath:db/migration").load();
-		assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+		assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(3);
 		assertThat(query("SELECT count(*) FROM "+schema+".reservation_process WHERE process_status='CONFIRMED' "
 				+"AND request_event_id='request-old' AND external_reservation_id=8251 AND rest_verified_at IS NULL AND rest_observed_status IS NULL")).isEqualTo(1);
 		assertThat(upgraded.migrate().migrationsExecuted).isZero();

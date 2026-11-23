@@ -297,6 +297,15 @@ public class ReservationProcessEntity {
 			return Outcome.CONFLICT;
 		}
 		if (event.signal() == Signal.PHONE_REQUESTED) { return phoneRequestOutcome(event); }
+		if (event.signal() == Signal.RESERVATION_CANCELLED) {
+			if (!matchesConfirmation(event) || (requestEventId != null && !requestEventId.equals(event.requestEventId()))) {
+				return Outcome.CONFLICT;
+			}
+			if (externalReservationId == null) { return status.isTerminal() ? Outcome.CONFLICT : Outcome.DEFER; }
+			// REST-reconciled reservations may legitimately have no local request event.
+			if (requestEventId == null && restVerifiedAt == null) { return Outcome.CONFLICT; }
+			return null;
+		}
 		if (requestEventId == null) { return status.isTerminal() ? Outcome.CONFLICT : Outcome.DEFER; }
 		if (!requestEventId.equals(event.requestEventId()) || !event.hasSupportedReason()) { return Outcome.CONFLICT; }
 		if (event.signal() == Signal.RESERVATION_CONFIRMED && !matchesConfirmation(event)) { return Outcome.CONFLICT; }
@@ -329,12 +338,7 @@ public class ReservationProcessEntity {
 				externalReservationId = event.externalReservationId();
 				outcomeReason = null;
 			}
-				case RESERVATION_CANCELLED -> {
-					externalReservationId = event.externalReservationId();
-					cancellationReason = checkedCancellationReason(event.reason() == null ? cancellationReason : event.reason());
-					restObservedStatus = Observation.CANCELLED;
-					restVerifiedAt = event.occurredAt().truncatedTo(ChronoUnit.MICROS);
-				}
+			case RESERVATION_CANCELLED -> cancellationReason = checkedCancellationReason(event.reason());
 			case PHONE_REJECTED -> {
 				outcomeReason = event.reason();
 				expiresAt = event.expiresAt().truncatedTo(ChronoUnit.MICROS);

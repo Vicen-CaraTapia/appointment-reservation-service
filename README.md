@@ -209,6 +209,9 @@ de cátedra se reportan como errores de dependencia (`502`), separados del `401`
 del usuario final. Un `503 CANCELLATION_OUTCOME_UNKNOWN` conserva el intento
 durable: consultá el progreso antes de repetir. Una repetición pendiente intenta
 una conciliación acotada sin reenviar el POST remoto. Las respuestas usan `no-store`.
+El consumidor también aplica `AppointmentCancelled` correlacionado; la respuesta
+REST y el evento pueden llegar en cualquier orden. El recibo durable por `eventId`
+evita repetir efectos, y una confirmación anterior no reabre un proceso cancelado.
 
 ## Ejecutar localmente
 

@@ -379,7 +379,7 @@ class ReservationProcessPersistenceIT {
 	@Test
 	void appliesLaterMigrationsAfterAnExistingV1WithoutReapplyingThem() {
 		var flyway = context.getBean(Flyway.class);
-		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
+		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 
