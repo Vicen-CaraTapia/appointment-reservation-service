@@ -11,7 +11,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.Reservati
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.web.dto.CancelReservationRequest;
 
 @RestController
-@RequestMapping("/api/reservation-processes")
+@RequestMapping({"/api/reservation-processes", "/api/reservations"})
 public class ReservationProcessCancellationController {
     private final CancelOwnedReservationUseCase cancellation;
     public ReservationProcessCancellationController(CancelOwnedReservationUseCase cancellation) {

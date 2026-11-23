@@ -7,8 +7,9 @@
 # Appointment Reservation Service
 
 Backend de usuarios finales, turnos y reservas para el sistema distribuido de
-Programación 2. Ofrece registro, autenticación y consulta de disponibilidad de
-turnos. Las operaciones de reserva todavía no están disponibles.
+Programación 2. Ofrece registro, autenticación, consulta de disponibilidad,
+seguimiento de procesos, envío de información solicitada, consulta y cancelación
+de reservas propias.
 
 ## Requisitos
 
@@ -192,9 +193,22 @@ misma intención conserva el envío durable según A8.3; no envíes identificado
 nuevos para forzar otra publicación. La recuperación respeta los límites configurados.
 
 
+### Consultar mis reservas
+
+`GET /api/reservations` requiere el JWT final-user. Acepta `reservationStatus`
+(`PHONE_PENDING`, `CONFIRMED`, `CANCELLED` o `FAILED`), `from` y `to` inclusivos
+(`YYYY-MM-DD`), `page` (0 por defecto) y `size` (20 por defecto, máximo 100).
+El orden es fecha y hora descendentes. `total` cuenta únicamente reservas
+asociadas al usuario autenticado; no se aceptan filtros de propietario.
+
+Cada elemento identifica el proceso mediante `id` local y distingue `processStatus`
+(estado local de Appointment) de `reservationStatus` (observación de cátedra). No
+incluye IDs externos, teléfono ni `externalPatientId`. Las respuestas usan
+`Cache-Control: no-store`.
+
 ### Cancelar una reserva propia
 
-`POST /api/reservation-processes/{id}/cancel` requiere el JWT final-user del
+`POST /api/reservations/{id}/cancel` requiere el JWT final-user del
 propietario y el ID local del proceso. El body es opcional; si se envía, usá JSON:
 
 ```json
