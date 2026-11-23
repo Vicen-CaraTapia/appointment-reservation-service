@@ -72,6 +72,14 @@ class ReservationProcessCancellationControllerTest {
         assertThat(response).doesNotContain("private", "user-42", "8251");
         verify(remote).cancel("private-process",body.contains("private reason")?"private reason":null);
     }
+    @Test void publicReservationsRouteUsesTheLocalProcessId() throws Exception {
+        send("/api/reservations/9/cancel", "{}", 42)
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(9))
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(header().string("Cache-Control", "no-store"));
+        verify(store).prepareCancellation(9L, OWNER, null, NOW);
+        verify(remote).cancel("private-process", null);
+    }
     @ParameterizedTest @ValueSource(strings={"userId","ownerId","externalPatientId","groupId","reservationProcessId","status","unknown"})
     void administrativeAndUnknownFieldsAreRejected(String field) throws Exception {
         failure(send(PATH,"{\""+field+"\":\"private reason\"}",42),400,"INVALID_REQUEST");
