@@ -192,6 +192,24 @@ misma intención conserva el envío durable según A8.3; no envíes identificado
 nuevos para forzar otra publicación. La recuperación respeta los límites configurados.
 
 
+### Cancelar una reserva propia
+
+`POST /api/reservation-processes/{id}/cancel` requiere el JWT final-user del
+propietario y el ID local del proceso. El body es opcional; si se envía, usá JSON:
+
+```json
+{"reason":"Cambio de planes"}
+```
+
+`reason` puede ser nulo o tener hasta 500 caracteres. No se aceptan campos de
+propietario ni identificadores técnicos. Una cancelación verificada responde
+`200` con `id` y `status: CANCELLED`. Un proceso ajeno o inexistente devuelve el
+mismo `404`; un estado no cancelable, `409`. Los errores de autenticación técnica
+de cátedra se reportan como errores de dependencia (`502`), separados del `401`
+del usuario final. Un `503 CANCELLATION_OUTCOME_UNKNOWN` conserva el intento
+durable: consultá el progreso antes de repetir. Una repetición pendiente intenta
+una conciliación acotada sin reenviar el POST remoto. Las respuestas usan `no-store`.
+
 ## Ejecutar localmente
 
 Configurá la conexión con la base de Appointment. Para la infraestructura Docker
