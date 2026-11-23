@@ -518,3 +518,11 @@ El listado obtiene primero todas las páginas y comprueba las asociaciones, conc
 el lote autorizado completo y luego pagina la respuesta. Devuelve por separado el
 estado observado y el estado local verificado. El GET se ejecuta fuera de la
 transacción local; los fallos externos o resultados incompletos no disparan cambios.
+
+## V10 — Solicitud durable de cancelación
+
+Agrega `CANCELLATION_PENDING`, `cancellation_reason` y
+`cancellation_requested_at`. El estado se guarda antes de invocar el POST remoto,
+de modo que un timeout o una caída posterior al envío no se convierta en un falso
+fracaso. La confirmación correlacionada registra evidencia `CANCELLED`; la API y
+el consumidor Kafka se implementan en incrementos posteriores de A9.3.

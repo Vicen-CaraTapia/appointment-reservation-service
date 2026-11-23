@@ -115,9 +115,21 @@ class AsynchronousReservationTransitionsTest {
 	@MethodSource("terminalStatesAndAllSignals")
 	void noSignalReopensOrOverwritesATerminalState(ReservationProcessStatus current, Signal signal) {
 		var result = decide(current, signal);
+		if (current == CONFIRMED && signal == Signal.RESERVATION_CANCELLED) {
+			assertThat(result).isEqualTo(new Decision(Outcome.APPLY, CANCELLED));
+			return;
+		}
 		assertThat(result.nextStatus()).isEqualTo(current);
 		assertThat(result.outcome()).isIn(Outcome.IGNORE, Outcome.CONFLICT);
 		assertThat(current.isTerminal()).isTrue();
+	}
+
+	@Test
+	void cancellationEventCanMoveConfirmedOrPendingCancellationToCancelled() {
+		assertThat(decide(CONFIRMED, Signal.RESERVATION_CANCELLED))
+				.isEqualTo(new Decision(Outcome.APPLY, CANCELLED));
+		assertThat(decide(CANCELLATION_PENDING, Signal.RESERVATION_CANCELLED))
+				.isEqualTo(new Decision(Outcome.APPLY, CANCELLED));
 	}
 
 	static Stream<Arguments> terminalStatesAndAllSignals() {

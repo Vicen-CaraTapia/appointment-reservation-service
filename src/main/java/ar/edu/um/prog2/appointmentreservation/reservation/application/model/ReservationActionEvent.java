@@ -21,6 +21,8 @@ public record ReservationActionEvent(String eventId, Signal signal, String exter
 					&& confirmedSelection == null && reason == null;
 			case RESERVATION_CONFIRMED -> identifier(requestEventId) && expiresAt == null && externalReservationId != null
 					&& externalReservationId > 0 && confirmedSelection != null && reason == null;
+				case RESERVATION_CANCELLED -> identifier(requestEventId) && expiresAt == null && externalReservationId != null
+						&& externalReservationId > 0 && confirmedSelection == null && (reason == null || reason.length() <= 500);
 			case PHONE_REJECTED -> identifier(requestEventId) && expiresAt != null && externalReservationId == null
 					&& confirmedSelection == null && code(reason);
 			case PROCESS_EXPIRED, PROCESS_INVALID -> identifier(requestEventId) && expiresAt == null
