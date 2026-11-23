@@ -74,6 +74,9 @@ class OwnedReservationsHttpIT {
 	private final AtomicReference<String> cancellationBody = new AtomicReference<>();
 	private final List<Row> remoteRows = new CopyOnWriteArrayList<>();
 	private final List<String> issuedTokens = new ArrayList<>();
+	private final java.util.concurrent.atomic.AtomicBoolean ignorePatientFilter = new java.util.concurrent.atomic.AtomicBoolean();
+	private final AtomicInteger totalOverride = new AtomicInteger(-1);
+	private java.util.concurrent.ExecutorService catedraExecutor;
 	private String url;
 	private String username;
 	private String password;
@@ -108,6 +111,8 @@ class OwnedReservationsHttpIT {
 		}
 		catedra = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 		catedra.createContext("/", this::catedraRequest);
+		catedraExecutor = java.util.concurrent.Executors.newCachedThreadPool();
+		catedra.setExecutor(catedraExecutor);
 		catedra.start();
 		var properties = new HashMap<String, Object>();
 		properties.put(FinalUserJwtTestSupport.SECRET_PROPERTY, FinalUserJwtTestSupport.signingSecret());
@@ -153,6 +158,7 @@ class OwnedReservationsHttpIT {
 	void closeApplicationAndRemoveOnlyTheTestSchema(CapturedOutput output) throws Exception {
 		if (context != null) { context.close(); }
 		if (catedra != null) { catedra.stop(0); }
+		if (catedraExecutor != null) { catedraExecutor.shutdownNow(); }
 		if (schema != null) {
 			try (var connection = connection(); var statement = connection.createStatement()) {
 				statement.execute("DROP SCHEMA " + schema + " CASCADE");
@@ -243,6 +249,84 @@ class OwnedReservationsHttpIT {
 		assertThat(cancellationRequests).hasValue(1);
 	}
 
+	@Test
+	void mixedTechnicalResponseFailsWithoutExposingOrReconcilingAnyUsersRows() throws Exception {
+		ignorePatientFilter.set(true);
+		var response = get("/api/reservations", aliceToken);
+		assertProblem(response, 502, "INVALID_CATEDRA_RESERVATION_RESPONSE");
+		assertThat(response.body()).doesNotContain("8253", "alice-process", "bob-process", "total", "items", "Private");
+		assertThat(processes.findById(aliceFirstProcessId).orElseThrow().getStatus())
+				.isEqualTo(ReservationProcessStatus.HELD);
+		assertThat(processes.findById(bobProcessId).orElseThrow().getStatus())
+				.isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	@Test
+	void unassociatedRemoteRowsNeverInflatePublicTotalsOrLeakPaginationLinks() throws Exception {
+		remoteRows.add(new Row(9999, "unassociated-private-process", patientId(alice), FIRST_DATE,
+				LocalTime.of(12, 0), LocalTime.of(12, 30), 201, TechnicalStatus.CONFIRMED));
+		var response = get("/api/reservations?size=1", aliceToken);
+		assertThat(response.statusCode()).isEqualTo(200);
+		assertThat(json.readTree(response.body()).get("total").asLong()).isEqualTo(2);
+		assertThat(response.body()).doesNotContain("9999", "unassociated-private-process", "patientPhone");
+		assertThat(response.headers().firstValue("Link")).isEmpty();
+		assertThat(response.headers().firstValue("X-Total-Count")).isEmpty();
+	}
+
+	@Test
+	void incompleteRemotePageCannotApplyPartialEvidence() throws Exception {
+		totalOverride.set(101);
+		var response = get("/api/reservations", aliceToken);
+		assertProblem(response, 503, "RESERVATION_LIST_INCOMPLETE");
+		assertThat(response.body()).doesNotContain("101", "items", "total");
+		assertThat(processes.findById(aliceFirstProcessId).orElseThrow().getStatus())
+				.isEqualTo(ReservationProcessStatus.HELD);
+	}
+
+	@Test
+	void pendingCancellationSurvivesDependencyFailureAndConvergesWithoutAnotherPost() throws Exception {
+		assertThat(get("/api/reservations", aliceToken).statusCode()).isEqualTo(200);
+		catedraCancellationStatus.set(503);
+		catedraListStatus.set(503);
+		assertProblem(post("/api/reservations/" + aliceFirstProcessId + "/cancel", aliceToken, "{}"),
+				503, "CANCELLATION_OUTCOME_UNKNOWN");
+		assertThat(processes.findById(aliceFirstProcessId).orElseThrow().getStatus())
+				.isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
+		var original = remoteRows.stream().filter(row -> row.processId().equals("alice-process-1")).findFirst().orElseThrow();
+		remoteRows.remove(original);
+		remoteRows.add(original.cancelled());
+		catedraListStatus.set(200);
+		var replay = post("/api/reservations/" + aliceFirstProcessId + "/cancel", aliceToken, "{}");
+		assertThat(replay.statusCode()).isEqualTo(200);
+		assertThat(json.readTree(replay.body()).get("status").asString()).isEqualTo("CANCELLED");
+		assertThat(cancellationRequests).hasValue(1);
+	}
+
+	@Test
+	void remoteSuccessAndLocalCommitFailureKeepUncertaintyUntilEvidenceCanBeSaved() throws Exception {
+		assertThat(get("/api/reservations", aliceToken).statusCode()).isEqualTo(200);
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.execute("CREATE FUNCTION " + schema + ".reject_cancel() RETURNS trigger LANGUAGE plpgsql AS $$ "
+					+ "BEGIN IF NEW.process_status = 'CANCELLED' THEN RAISE EXCEPTION 'test-only cancellation commit failure'; "
+					+ "END IF; RETURN NEW; END $$");
+			statement.execute("CREATE CONSTRAINT TRIGGER reject_cancel AFTER UPDATE ON " + schema
+					+ ".reservation_process DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "
+					+ schema + ".reject_cancel()");
+		}
+		var first = post("/api/reservations/" + aliceFirstProcessId + "/cancel", aliceToken, "{}");
+		assertProblem(first, 503, "CANCELLATION_OUTCOME_UNKNOWN");
+		assertThat(first.body()).doesNotContain("test-only cancellation", "SQL", "alice-process");
+		assertThat(processes.findById(aliceFirstProcessId).orElseThrow().getStatus())
+				.isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
+		try (var connection = connection(); var statement = connection.createStatement()) {
+			statement.execute("DROP TRIGGER reject_cancel ON " + schema + ".reservation_process");
+		}
+		var recovered = post("/api/reservations/" + aliceFirstProcessId + "/cancel", aliceToken, "{}");
+		assertThat(recovered.statusCode()).isEqualTo(200);
+		assertThat(json.readTree(recovered.body()).get("status").asString()).isEqualTo("CANCELLED");
+		assertThat(cancellationRequests).hasValue(1);
+	}
+
 	private UserEntity createUser(String login, String email) {
 		var user = new UserEntity(login, ARGON_HASH, null, null, email, null, "es", "test");
 		user.activate("test");
@@ -250,7 +334,8 @@ class OwnedReservationsHttpIT {
 	}
 
 	private long createProcess(UserEntity user, String externalProcessId, String holdId, LocalDate date, LocalTime time) {
-		var process = new ReservationProcessEntity(users.getReferenceById(user.getId()), 201, date, time,
+		var process = new ReservationProcessEntity(users.getReferenceById(user.getId()),
+				user.getId().equals(bob.getId()) ? 203 : (date.equals(SECOND_DATE) ? 202 : 201), date, time,
 				ExternalPatientId.fromUserId(user.getId()), "test");
 		process.markHeld(holdId, externalProcessId, Instant.parse("2030-02-01T00:00:00Z"), "test");
 		return processes.saveAndFlush(process).getId();
@@ -290,13 +375,13 @@ class OwnedReservationsHttpIT {
 					return;
 				}
 				var query = query(exchange.getRequestURI());
-				var matches = remoteRows.stream().filter(row -> matches(row, query))
+				var matches = remoteRows.stream().filter(row -> matches(row, query, ignorePatientFilter.get()))
 						.sorted(Comparator.comparing(Row::date).thenComparing(Row::startTime).reversed()).toList();
 				int page = Integer.parseInt(query.getOrDefault("page", "0"));
 				int size = Integer.parseInt(query.getOrDefault("size", "20"));
 				int start = Math.min(page * size, matches.size());
 				int end = Math.min(start + size, matches.size());
-				exchange.getResponseHeaders().set("X-Total-Count", Integer.toString(matches.size()));
+				exchange.getResponseHeaders().set("X-Total-Count", Integer.toString(totalOverride.get() < 0 ? matches.size() : totalOverride.get()));
 				respond(exchange, 200, "application/json", matches.subList(start, end).stream()
 						.map(this::rowJson).collect(Collectors.joining(",", "[", "]")));
 			} else if ("POST".equals(exchange.getRequestMethod()) && path.startsWith("/api/appointments/")
@@ -321,8 +406,8 @@ class OwnedReservationsHttpIT {
 		}
 	}
 
-	private static boolean matches(Row row, Map<String, String> query) {
-		return (query.get("externalPatientId") == null || query.get("externalPatientId").equals(row.patientId()))
+	private static boolean matches(Row row, Map<String, String> query, boolean ignorePatientFilter) {
+		return (ignorePatientFilter || query.get("externalPatientId") == null || query.get("externalPatientId").equals(row.patientId()))
 				&& (query.get("status") == null || query.get("status").equals(row.status().name()))
 				&& (query.get("from") == null || !row.date().isBefore(LocalDate.parse(query.get("from"))))
 				&& (query.get("to") == null || !row.date().isAfter(LocalDate.parse(query.get("to"))));

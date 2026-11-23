@@ -136,6 +136,26 @@ class CatedraAppointmentActionListenerKafkaIT {
 			}).when(actions).process(any());
 			container.start();
 			await(() -> committedOffset(admin) == 3);
+			// Simulate business commit succeeding, then losing the acknowledgment.
+			var committedEffects = new java.util.concurrent.atomic.AtomicInteger();
+			var deliveries = new java.util.concurrent.atomic.AtomicInteger();
+			org.mockito.Mockito.doAnswer(call -> {
+				ReservationActionEvent event = call.getArgument(0);
+				if (deliveries.incrementAndGet() == 1) {
+					committedEffects.incrementAndGet();
+					throw new IllegalStateException("test-only failure after business commit");
+				}
+				return new ReservationEventReceipt(event.eventId(), State.APPLIED, 42L, true);
+			}).when(actions).process(any());
+			kafka.send(TOPIC, "process-broker-4", cancelled.replace("cancel-broker", "cancel-after-commit"))
+					.get(10, TimeUnit.SECONDS);
+			await(() -> !container.isRunning());
+			assertThat(committedOffset(admin)).isEqualTo(3);
+			assertThat(committedEffects).hasValue(1);
+			container.start();
+			await(() -> committedOffset(admin) == 4);
+			assertThat(deliveries).hasValue(2);
+			assertThat(committedEffects).hasValue(1);
 		}
 	}
 
