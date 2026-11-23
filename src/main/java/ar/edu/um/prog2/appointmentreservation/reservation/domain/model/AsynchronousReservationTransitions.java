@@ -41,6 +41,10 @@ public final class AsynchronousReservationTransitions {
 	public static Decision decide(ReservationProcessStatus current, Signal signal) {
 		Objects.requireNonNull(current, "Current process status is required");
 		Objects.requireNonNull(signal, "Process signal is required");
+		if (current == ReservationProcessStatus.CANCELLATION_PENDING) {
+			return signal == Signal.RESERVATION_CANCELLED ? apply(ReservationProcessStatus.CANCELLED)
+					: keep(Outcome.CONFLICT, current);
+		}
 		if (current.isTerminal()) {
 			return forTerminal(current, signal);
 		}

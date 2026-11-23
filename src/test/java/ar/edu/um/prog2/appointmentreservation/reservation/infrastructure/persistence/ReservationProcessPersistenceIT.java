@@ -379,7 +379,7 @@ class ReservationProcessPersistenceIT {
 	@Test
 	void appliesLaterMigrationsAfterAnExistingV1WithoutReapplyingThem() {
 		var flyway = context.getBean(Flyway.class);
-		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9");
+		assertThat(flyway.info().applied()).extracting(info -> info.getVersion().toString()).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 
@@ -1141,6 +1141,22 @@ class ReservationProcessPersistenceIT {
 		assertThat(after.getStatus().name()).isEqualTo("CANCELLED");
 		assertThat(after.getVersion()).isEqualTo(before.getVersion());
 		assertThat(after.getRestVerifiedAt()).isEqualTo(before.getRestVerifiedAt());
+	}
+
+	@Test
+	void cancellationIntentSurvivesReloadAndReplayPreservesItsOriginalPayload() {
+		var held = restHeld("cancel-intent");
+		store().reconcileReservations(identity(owner), List.of(restItem(held.id(),"cancel-intent",8251,"CONFIRMED")), Instant.now());
+		var first = store().prepareCancellation(held.id(), identity(owner), "private reason", Instant.now());
+		assertThat(first.newlyClaimed()).isTrue();
+		var loaded = processes.findById(held.id()).orElseThrow();
+		assertThat(loaded.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
+		assertThat(loaded.getCancellationReason()).isEqualTo("private reason");
+		var replay = store().prepareCancellation(held.id(), identity(owner), "different", Instant.now());
+		assertThat(replay.newlyClaimed()).isFalse();
+		assertThat(replay.reason()).isEqualTo(first.reason());
+		assertThat(replay.requestedAt()).isEqualTo(loaded.getCancellationRequestedAt());
+		assertThat(processes.findById(held.id()).orElseThrow().getVersion()).isEqualTo(loaded.getVersion());
 	}
 
 	@Test

@@ -390,6 +390,72 @@ class JpaReservationProcessAdapterTest {
 		when(users.getReferenceById(42L)).thenReturn(user);
 	}
 
+	@Test
+	void claimsCancellationAfterCheckingOwnershipAndCommitsBeforeReturning() {
+		preparePersistence();
+		var process = new ReservationProcessEntity(users.getReferenceById(42L), 202,
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		process.markHeld("hold", "trusted-process", HOLD.expiresAt(), "alice");
+		ReflectionTestUtils.setField(process, "status", ReservationProcessStatus.CONFIRMED);
+		ReflectionTestUtils.setField(process, "externalReservationId", 8251L);
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.of(process));
+		var now = Instant.now();
+		var first = adapter.prepareCancellation(123, OWNER, "private reason", now);
+		assertThat(first.newlyClaimed()).isTrue();
+		assertThat(first.externalProcessId()).isEqualTo("trusted-process");
+		assertThat(first.status()).isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
+		assertThat(first.toString()).doesNotContain("private reason");
+		var replay = adapter.prepareCancellation(123, OWNER, "changed reason", now.plusSeconds(1));
+		assertThat(replay.newlyClaimed()).isFalse();
+		assertThat(replay.reason()).isEqualTo("private reason");
+		assertThat(replay.requestedAt()).isEqualTo(now);
+		verify(processes).flush();
+	}
+
+	@Test
+	void foreignOrMissingCancellationCannotCreateAnIntent() {
+		preparePersistence();
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.empty());
+		assertThatThrownBy(() -> adapter.prepareCancellation(123, OWNER, null, Instant.now()))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(Reason.NOT_FOUND));
+		verify(processes, never()).flush();
+		verify(manager).rollback(transaction);
+	}
+
+	@ParameterizedTest
+	@org.junit.jupiter.params.provider.EnumSource(value = ReservationProcessStatus.class,
+			names = {"CONFIRMED", "CANCELLED", "CANCELLATION_PENDING"},
+			mode = org.junit.jupiter.params.provider.EnumSource.Mode.EXCLUDE)
+	void noncancelableStatesDoNotCreateAnIntent(ReservationProcessStatus status) {
+		preparePersistence();
+		var process = new ReservationProcessEntity(users.getReferenceById(42L), 202,
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		ReflectionTestUtils.setField(process, "status", status);
+		ReflectionTestUtils.setField(process, "externalReservationId", 8251L);
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.of(process));
+		assertThatThrownBy(() -> adapter.prepareCancellation(123, OWNER, null, Instant.now()))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(Reason.CONFLICT));
+		assertThat(process.getCancellationRequestedAt()).isNull();
+		verify(processes, never()).flush();
+	}
+
+	@Test
+	void failedCancellationClaimCommitIsNotReturnedAsSuccess() {
+		preparePersistence();
+		var process = new ReservationProcessEntity(users.getReferenceById(42L), 202,
+				SELECTION.date(), SELECTION.startTime(), "user-42", "alice");
+		process.markHeld("hold", "trusted-process", HOLD.expiresAt(), "alice");
+		ReflectionTestUtils.setField(process, "status", ReservationProcessStatus.CONFIRMED);
+		ReflectionTestUtils.setField(process, "externalReservationId", 8251L);
+		when(processes.findOwnedForUpdate(123, 42)).thenReturn(Optional.of(process));
+		doThrow(new TransactionSystemException("private diagnostic")).when(manager).commit(transaction);
+		assertThatThrownBy(() -> adapter.prepareCancellation(123, OWNER, null, Instant.now()))
+				.isInstanceOfSatisfying(ReservationProcessStateException.class,
+						error -> assertThat(error.reason()).isEqualTo(Reason.STORAGE_FAILURE)).hasNoCause();
+	}
+
 	private void assertStorageFailure() {
 		assertThatThrownBy(() -> adapter.createHeld(OWNER, SELECTION, HOLD))
 				.isInstanceOf(ReservationPersistenceException.class)

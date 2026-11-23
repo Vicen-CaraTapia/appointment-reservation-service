@@ -14,7 +14,8 @@ class RestReservationTransitionsTest {
 	@ParameterizedTest @MethodSource("nonterminalObservations")
 	void onlyFinalEvidenceAdvancesANonterminalWorkflow(ReservationProcessStatus current, Observation observation) {
 		var decision = RestReservationTransitions.decide(current, observation);
-		if (observation == Observation.PHONE_PENDING) {
+		if (observation == Observation.PHONE_PENDING || (current == ReservationProcessStatus.CANCELLATION_PENDING
+				&& observation != Observation.CANCELLED)) {
 			assertThat(decision.outcome()).isEqualTo(Outcome.IGNORE);
 			assertThat(decision.nextStatus()).isEqualTo(current);
 		} else {

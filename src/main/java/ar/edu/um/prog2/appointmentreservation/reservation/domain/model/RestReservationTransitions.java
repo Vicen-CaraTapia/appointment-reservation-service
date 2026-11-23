@@ -12,6 +12,10 @@ public final class RestReservationTransitions {
 	public static Decision decide(ReservationProcessStatus current, Observation observation) {
 		Objects.requireNonNull(current, "Current process state is required");
 		Objects.requireNonNull(observation, "Verified reservation state is required");
+		if (current == ReservationProcessStatus.CANCELLATION_PENDING) {
+			return new Decision(observation == Observation.CANCELLED ? Outcome.APPLY : Outcome.IGNORE,
+					observation == Observation.CANCELLED ? ReservationProcessStatus.CANCELLED : current);
+		}
 		if (observation == Observation.PHONE_PENDING) {
 			return new Decision(current.isTerminal() ? Outcome.CONFLICT : Outcome.IGNORE, current);
 		}

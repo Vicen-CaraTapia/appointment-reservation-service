@@ -171,7 +171,7 @@ class ReservationEventPersistenceIT {
 	@Test
 	void asynchronousMigrationsPreserveOwnershipSelectionExpiryAndAuditOfTheExistingV4Row() {
 		assertThat(context.getBean(Flyway.class).info().applied()).extracting(m -> m.getVersion().toString())
-				.containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9");
+				.containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
 		assertThat(context.getBean(Flyway.class).migrate().migrationsExecuted).isZero();
 		var process = process();
 		assertThat(process.getOwner().getId()).isEqualTo(ownerId);

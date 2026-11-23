@@ -17,8 +17,13 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Star
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PreparedReservationCancellation;
 
 public interface ReservationProcessStore {
+
+	/** Commits a single owned claim under a row lock. Replays preserve the original intent. */
+	PreparedReservationCancellation prepareCancellation(
+			long id, AuthenticatedReservationUser owner, String reason, Instant now);
 
 	/**
 	 * Revalidates the complete authorized batch under local locks and commits all effects atomically.
