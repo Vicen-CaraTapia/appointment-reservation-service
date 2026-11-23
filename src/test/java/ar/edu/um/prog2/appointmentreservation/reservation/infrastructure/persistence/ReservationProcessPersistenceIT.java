@@ -1152,6 +1152,8 @@ class ReservationProcessPersistenceIT {
 		var loaded = processes.findById(held.id()).orElseThrow();
 		assertThat(loaded.getStatus()).isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
 		assertThat(loaded.getCancellationReason()).isEqualTo("private reason");
+		context.close();
+		startApplicationContext();
 		var replay = store().prepareCancellation(held.id(), identity(owner), "different", Instant.now());
 		assertThat(replay.newlyClaimed()).isFalse();
 		assertThat(replay.reason()).isEqualTo(first.reason());
@@ -1166,6 +1168,30 @@ class ReservationProcessPersistenceIT {
 		assertThat(verified.getCancellationReason()).isEqualTo(first.reason());
 		assertThat(store().recordCancellation(held.id(), identity(owner), evidence).version()).isEqualTo(cancelled.version());
 		assertThat(processes.findById(held.id()).orElseThrow().getRestVerifiedAt()).isEqualTo(verified.getRestVerifiedAt());
+	}
+
+	@Test
+	void concurrentCancellationClaimsGrantExactlyOneRemotePostPermission() throws Exception {
+		var held = restHeld("concurrent-cancel");
+		store().reconcileReservations(identity(owner),
+				List.of(restItem(held.id(), "concurrent-cancel", 8251, "CONFIRMED")), Instant.now());
+		var ready = new java.util.concurrent.CountDownLatch(2);
+		var start = new java.util.concurrent.CountDownLatch(1);
+		try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+			var task = (java.util.concurrent.Callable<Boolean>) () -> {
+				ready.countDown();
+				assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+				return store().prepareCancellation(held.id(), identity(owner), null, Instant.now()).newlyClaimed();
+			};
+			var first = executor.submit(task);
+			var second = executor.submit(task);
+			assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+			start.countDown();
+			assertThat(List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS)))
+					.containsExactlyInAnyOrder(true, false);
+		}
+		assertThat(processes.findById(held.id()).orElseThrow().getStatus())
+				.isEqualTo(ReservationProcessStatus.CANCELLATION_PENDING);
 	}
 
 	@Test

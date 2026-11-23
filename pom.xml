@@ -172,6 +172,7 @@
 										<include>**/ReservationEventPersistenceIT.java</include>
 										<include>**/ReservationProcessConfirmationHttpIT.java</include>
 										<include>**/ReservationProcessPhoneHttpIT.java</include>
+										<include>**/OwnedReservationsHttpIT.java</include>
 										<include>**/UserRegistrationIT.java</include>
 										<include>**/UserRegistrationHttpIT.java</include>
 										<include>**/FinalUserAuthenticationHttpIT.java</include>

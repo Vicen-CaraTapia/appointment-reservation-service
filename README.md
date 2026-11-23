@@ -571,6 +571,8 @@ reales a esos servicios.
 El perfil PostgreSQL incluye la confirmación por HTTP con registro/login reales,
 propiedad del proceso, doble clic, rechazos y fallo local después de aceptación
 remota. Usa un servidor de cátedra simulado localmente; no crea reservas reales.
+Incluye el listado propio y la cancelación por HTTP: aislamiento entre usuarios,
+paginación, respuesta remota incompleta y conciliación sin repetir el POST.
 También verifica inbox e intenciones durables de teléfono, con duplicados,
 reinicio y rollback. La prueba HTTP de teléfono recorre solicitud, consulta propia,
 envío, corrección y confirmación; también cubre resultados durante la publicación y
