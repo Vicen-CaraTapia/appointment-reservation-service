@@ -15,6 +15,7 @@ public final class AsynchronousReservationTransitions {
 		PHONE_PUBLICATION_ACKNOWLEDGED,
 		PHONE_REJECTED,
 		RESERVATION_CONFIRMED,
+		RESERVATION_CANCELLED,
 		PROCESS_EXPIRED,
 		PROCESS_INVALID
 	}
@@ -40,6 +41,10 @@ public final class AsynchronousReservationTransitions {
 	public static Decision decide(ReservationProcessStatus current, Signal signal) {
 		Objects.requireNonNull(current, "Current process status is required");
 		Objects.requireNonNull(signal, "Process signal is required");
+		if (current == ReservationProcessStatus.CANCELLATION_PENDING) {
+			return signal == Signal.RESERVATION_CANCELLED ? apply(ReservationProcessStatus.CANCELLED)
+					: keep(Outcome.CONFLICT, current);
+		}
 		if (current.isTerminal()) {
 			return forTerminal(current, signal);
 		}
@@ -58,6 +63,9 @@ public final class AsynchronousReservationTransitions {
 
 	private static Decision forTerminal(ReservationProcessStatus current, Signal signal) {
 		if (signal == Signal.PHONE_SUBMISSION_ACCEPTED) { return keep(Outcome.CONFLICT, current); }
+		if (current == ReservationProcessStatus.CONFIRMED && signal == Signal.RESERVATION_CANCELLED) {
+			return apply(ReservationProcessStatus.CANCELLED);
+		}
 		var terminal = terminalStatus(signal);
 		return keep(terminal != null && terminal != current ? Outcome.CONFLICT : Outcome.IGNORE, current);
 	}
@@ -74,6 +82,7 @@ public final class AsynchronousReservationTransitions {
 					|| current == ReservationProcessStatus.WAITING_FOR_CONFIRMATION
 					? apply(ReservationProcessStatus.WAITING_FOR_PHONE) : keep(Outcome.CONFLICT, current);
 			case RESERVATION_CONFIRMED -> apply(ReservationProcessStatus.CONFIRMED);
+			case RESERVATION_CANCELLED -> keep(Outcome.CONFLICT, current);
 			case PROCESS_EXPIRED -> apply(ReservationProcessStatus.EXPIRED);
 			case PROCESS_INVALID -> apply(ReservationProcessStatus.INVALID);
 		};
@@ -86,6 +95,7 @@ public final class AsynchronousReservationTransitions {
 	private static ReservationProcessStatus terminalStatus(Signal signal) {
 		return switch (signal) {
 			case RESERVATION_CONFIRMED -> ReservationProcessStatus.CONFIRMED;
+			case RESERVATION_CANCELLED -> ReservationProcessStatus.CANCELLED;
 			case PROCESS_EXPIRED -> ReservationProcessStatus.EXPIRED;
 			case PROCESS_INVALID -> ReservationProcessStatus.INVALID;
 			default -> null;

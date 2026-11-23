@@ -105,6 +105,12 @@ public class ReservationProcessEntity {
 	@Column(name = "current_phone_submission_event_id", columnDefinition = "text")
 	private String currentPhoneSubmissionEventId;
 
+	@Column(name = "cancellation_reason", length = 500)
+	private String cancellationReason;
+
+	@Column(name = "cancellation_requested_at")
+	private Instant cancellationRequestedAt;
+
 	@Column(name = "created_by", nullable = false, length = 50, updatable = false)
 	private String createdBy;
 
@@ -238,6 +244,39 @@ public class ReservationProcessEntity {
 	public Observation getRestObservedStatus() { return restObservedStatus; }
 	public Instant getRestVerifiedAt() { return restVerifiedAt; }
 
+	/** Claims a confirmed process before the remote cancellation request. */
+	public void claimCancellation(String reason, Instant requestedAt, String actor) {
+		if (status == ReservationProcessStatus.CANCELLED) {
+			return;
+		}
+		if (status != ReservationProcessStatus.CONFIRMED || externalReservationId == null) {
+			throw new IllegalStateException("Only a confirmed reservation can be cancelled");
+		}
+		cancellationReason = checkedCancellationReason(reason);
+		cancellationRequestedAt = Objects.requireNonNull(requestedAt, "Cancellation time is required");
+		lastModifiedBy = auditActor(actor);
+		lastModifiedDate = requestedAt;
+		status = ReservationProcessStatus.CANCELLATION_PENDING;
+	}
+
+	/** Records correlated remote cancellation evidence; repeated evidence is idempotent. */
+	public void markCancelled(long reservationId, Instant cancelledAt, String reason, String actor) {
+		if (reservationId <= 0 || !Objects.equals(externalReservationId, reservationId)
+				|| (status != ReservationProcessStatus.CANCELLATION_PENDING
+						&& status != ReservationProcessStatus.CONFIRMED
+						&& status != ReservationProcessStatus.CANCELLED)) {
+			throw new IllegalStateException("Cancellation evidence does not match the reservation");
+		}
+		externalReservationId = reservationId;
+		cancellationReason = checkedCancellationReason(reason == null ? cancellationReason : reason);
+		restObservedStatus = Observation.CANCELLED;
+		restVerifiedAt = Objects.requireNonNull(cancelledAt, "Cancellation time is required")
+				.truncatedTo(ChronoUnit.MICROS);
+		status = ReservationProcessStatus.CANCELLED;
+		lastModifiedBy = auditActor(actor);
+		lastModifiedDate = restVerifiedAt;
+	}
+
 	/** Storage guards for validated evidence; the adapter commits this effect with its inbox receipt. */
 	public Decision applyAsynchronousEvidence(ReservationActionEvent event) {
 		Objects.requireNonNull(event, "Validated reservation event is required");
@@ -258,9 +297,20 @@ public class ReservationProcessEntity {
 			return Outcome.CONFLICT;
 		}
 		if (event.signal() == Signal.PHONE_REQUESTED) { return phoneRequestOutcome(event); }
+		if (event.signal() == Signal.RESERVATION_CANCELLED) {
+			if (!matchesConfirmation(event) || (requestEventId != null && !requestEventId.equals(event.requestEventId()))) {
+				return Outcome.CONFLICT;
+			}
+			if (externalReservationId == null) { return status.isTerminal() ? Outcome.CONFLICT : Outcome.DEFER; }
+			// REST-reconciled reservations may legitimately have no local request event.
+			if (requestEventId == null && restVerifiedAt == null) { return Outcome.CONFLICT; }
+			return null;
+		}
 		if (requestEventId == null) { return status.isTerminal() ? Outcome.CONFLICT : Outcome.DEFER; }
 		if (!requestEventId.equals(event.requestEventId()) || !event.hasSupportedReason()) { return Outcome.CONFLICT; }
 		if (event.signal() == Signal.RESERVATION_CONFIRMED && !matchesConfirmation(event)) { return Outcome.CONFLICT; }
+		if (event.signal() == Signal.RESERVATION_CANCELLED
+				&& (externalReservationId == null || !externalReservationId.equals(event.externalReservationId()))) { return Outcome.CONFLICT; }
 		if (status.isTerminal() && event.reason() != null && !event.reason().equals(outcomeReason)) { return Outcome.CONFLICT; }
 		return null;
 	}
@@ -288,6 +338,7 @@ public class ReservationProcessEntity {
 				externalReservationId = event.externalReservationId();
 				outcomeReason = null;
 			}
+			case RESERVATION_CANCELLED -> cancellationReason = checkedCancellationReason(event.reason());
 			case PHONE_REJECTED -> {
 				outcomeReason = event.reason();
 				expiresAt = event.expiresAt().truncatedTo(ChronoUnit.MICROS);
@@ -358,6 +409,13 @@ public class ReservationProcessEntity {
 		return value;
 	}
 
+	private static String checkedCancellationReason(String value) {
+		if (value != null && value.length() > 500) {
+			throw new IllegalArgumentException("Cancellation reason must not exceed 500 characters");
+		}
+		return value;
+	}
+
 	public Long getId() { return id; }
 	public Long getVersion() { return version; }
 	public UserEntity getOwner() { return owner; }
@@ -375,6 +433,8 @@ public class ReservationProcessEntity {
 	public Long getExternalReservationId() { return externalReservationId; }
 	public String getOutcomeReason() { return outcomeReason; }
 	public String getCurrentPhoneSubmissionEventId() { return currentPhoneSubmissionEventId; }
+	public String getCancellationReason() { return cancellationReason; }
+	public Instant getCancellationRequestedAt() { return cancellationRequestedAt; }
 	public String getCreatedBy() { return createdBy; }
 	public Instant getCreatedDate() { return createdDate; }
 	public String getLastModifiedBy() { return lastModifiedBy; }

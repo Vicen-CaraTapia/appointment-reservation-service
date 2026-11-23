@@ -34,6 +34,7 @@ import ar.edu.um.prog2.appointmentreservation.reservation.application.model.Star
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.StoredReservationProcess;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.InitialReservationConfirmation;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.model.ConfirmationPatient;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.model.PreparedReservationCancellation;
 import ar.edu.um.prog2.appointmentreservation.reservation.domain.model.ReservationProcessStatus;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationProcessStore;
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.entity.ReservationProcessEntity;
@@ -125,6 +126,64 @@ public final class JpaReservationProcessAdapter implements ReservationProcessSto
 		} catch (RuntimeException failure) {
 			throw new ReservationProcessStateException(Reason.STORAGE_FAILURE);
 		}
+	}
+
+	@Override
+	public PreparedReservationCancellation prepareCancellation(
+			long id, AuthenticatedReservationUser owner, String reason, Instant now) {
+		requireIdentity(id, owner);
+		Objects.requireNonNull(now, "Cancellation request time is required");
+		if (reason != null && reason.length() > 500) {
+			throw new IllegalArgumentException("Cancellation reason must not exceed 500 characters");
+		}
+		try {
+			return reconciliations.execute(transaction -> {
+				var process = processes.findOwnedForUpdate(id, owner.userId())
+						.orElseThrow(() -> new ReservationProcessStateException(Reason.NOT_FOUND));
+				var status = process.getStatus();
+				if ((status != ReservationProcessStatus.CONFIRMED && status != ReservationProcessStatus.CANCELLED
+						&& status != ReservationProcessStatus.CANCELLATION_PENDING)
+						|| process.getExternalReservationId() == null || process.getExternalReservationProcessId() == null) {
+					throw new ReservationProcessStateException(Reason.CONFLICT);
+				}
+				boolean claimed = status == ReservationProcessStatus.CONFIRMED;
+				if (claimed) { process.claimCancellation(reason, now, owner.login()); processes.flush(); }
+				return new PreparedReservationCancellation(
+						id, process.getExternalReservationId(), process.getExternalReservationProcessId(), process.getStatus(),
+						process.getCancellationReason(), process.getCancellationRequestedAt(), claimed);
+			});
+		} catch (ReservationProcessStateException failure) { throw failure; }
+		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
+	}
+
+	@Override
+	public StoredReservationProcess recordCancellation(long id, AuthenticatedReservationUser owner,
+			ar.edu.um.prog2.appointmentreservation.reservation.application.model.ReservationCancellation result) {
+		requireIdentity(id, owner);
+		Objects.requireNonNull(result, "Cancellation evidence is required");
+		try {
+			return reconciliations.execute(transaction -> {
+				var process = processes.findOwnedForUpdate(id, owner.userId())
+						.orElseThrow(() -> new ReservationProcessStateException(Reason.NOT_FOUND));
+				if (!Objects.equals(process.getExternalReservationProcessId(), result.reservationProcessId())
+						|| !Objects.equals(process.getExternalReservationId(), result.reservationId())
+						|| result.cancelledAt() == null
+						|| (process.getStatus() != ReservationProcessStatus.CANCELLATION_PENDING
+								&& process.getStatus() != ReservationProcessStatus.CANCELLED)) {
+					throw new ReservationProcessStateException(Reason.CONFLICT);
+				}
+				if (process.getStatus() != ReservationProcessStatus.CANCELLED) {
+					process.markCancelled(result.reservationId(), Instant.now(), null, owner.login());
+					if (process.getCurrentPhoneSubmissionEventId() != null) {
+						submissions.findForUpdate(process.getCurrentPhoneSubmissionEventId()).orElseThrow().close(Instant.now());
+					}
+					processes.flush();
+					submissions.flush();
+				}
+				return observation(process);
+			});
+		} catch (ReservationProcessStateException failure) { throw failure; }
+		catch (RuntimeException failure) { throw new ReservationProcessStateException(Reason.STORAGE_FAILURE); }
 	}
 
 	@Override

@@ -30,10 +30,27 @@ import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persist
 import ar.edu.um.prog2.appointmentreservation.reservation.infrastructure.persistence.repository.PhoneSubmissionJpaRepository;
 
 import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.ListOwnedReservationsUseCase;
+import ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.PrepareReservationCancellationUseCase;
 import ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.TechnicalReservationSource;
 
 @Configuration(proxyBeanMethods = false)
 public class ReservationProcessConfiguration {
+
+	@Bean
+	public ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.CancelOwnedReservationUseCase cancelOwnedReservationUseCase(
+			CurrentReservationUser users, ReservationProcessStore processes,
+			ar.edu.um.prog2.appointmentreservation.reservation.application.port.out.ReservationCanceller remote,
+			ListOwnedReservationsUseCase listing) {
+		return new ar.edu.um.prog2.appointmentreservation.reservation.application.usecase.CancelOwnedReservationUseCase(
+				users, processes, remote, listing, Clock.systemUTC());
+	}
+
+	@Bean
+	public PrepareReservationCancellationUseCase prepareReservationCancellationUseCase(
+			CurrentReservationUser currentUser, ReservationProcessStore processes) {
+		return new PrepareReservationCancellationUseCase(
+				currentUser, processes, Clock.systemUTC());
+	}
 
 	@Bean
 	public ListOwnedReservationsUseCase listOwnedReservationsUseCase(CurrentReservationUser currentUser,
